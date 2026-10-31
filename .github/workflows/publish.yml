@@ -44,5 +44,20 @@ jobs:
             exit 1
           fi
 
+      # Re-pushing an existing tag, or tagging a version that is already on npm,
+      # should not turn into a red run: publishing over a published version is
+      # rejected by the registry.
+      - name: Check whether this version is already published
+        id: published
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          if npm view "dsh-tmon@$version" version >/dev/null 2>&1; then
+            echo "dsh-tmon@$version is already on npm; nothing to publish."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Publish
+        if: steps.published.outputs.skip != 'true'
         run: npm publish --access public
