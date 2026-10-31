@@ -1,36 +1,34 @@
 # dsh-tmon
 
-Show the commands [tmon](https://www.npmjs.com/package/@qiu745/tmon) is tracking inside the Harness: a 「命令终端」panel lists every task with its state, last stage and progress, clicking a task opens that task's recorded output, tmon's own usage guide is registered as the `tmon` skill, and a short system-prompt section reminds the model to wrap long commands. **tmon itself is a separate CLI you install first — this plugin only displays what tmon records.**
+Bring [tmon](https://www.npmjs.com/package/@qiu745/tmon)'s workbench into the Harness: a 「命令终端」tab shows tmon's own web page inside the session, tmon's usage guide is registered as the `tmon` skill, a short system-prompt section reminds the model to wrap long commands, and a `tmon_tasks` tool lets it read task state and output. **tmon itself is a separate CLI you install first — this plugin only shows what tmon records.**
 
 ## 这是什么
 
-tmon 是一个独立的长命令工作台：它把命令放到后台跑，把输出、阶段、进度记在 `~/.tmon`，并开一个本地网页给人看。这个插件不重做这些事，只是把 tmon 已经记录的任务搬进 Harness 的会话面板，让你在会话里就能看到「刚才那条命令跑到哪了」，需要看实时输出时再一键跳到 tmon 网页。
+tmon 是一个独立的长命令工作台：它把命令放到后台跑，把输出、阶段、进度记在 `~/.tmon`，并开一个本地网页给人看。这个插件不重做这些事，它把那个网页搬进 Harness 的会话面板——会话顶部 View 标签行多一个「命令终端」，点开就是 tmon 的完整界面：实时输出、终端输入、缩放、停止任务、复制 id 都在。
+
+之所以直接嵌网页而不是重画一套：tmon 的界面本身就是一个终端模拟器，自己实现只会一直落后于它。这个插件真正增加的是「不用离开会话」和「让模型也能读」（`tmon_tasks`）。
 
 ## 面板里有什么
 
-- 状态点：运行中 / 成功 / 失败 / 已取消。
-- 命令原文，一行截断，悬停可看全。
-- 任务 id、开始时间、已运行或总用时、退出码、最近一次 `tmon stage` 上报的阶段名。
-- 最近一次 `tmon progress` 上报的百分比，带进度条。
-- 右上角「刷新」和「打开 tmon 网页」；面板每 4 秒自己刷新一次。
-- 点任意一行展开这个任务的详情：完整输出（stdout 正常色、stderr 红）、阶段、进度和状态变更按时间顺序夹在输出里；运行中的任务每 1.5 秒追加新输出，已结束的任务一次性读全。左侧「← 返回列表」回到列表。
+整个 tmon 网页，嵌在面板里，顶部两行是 Harness 自己的：
 
-输出按终端语义渲染：光标定位、清屏、颜色等控制序列先被去掉，再用 `\r`、`ESC[H` 这类「回到行首」的信号把本行已写的内容丢掉重写。所以进度条那种原地重绘只会留下最新一行，不会把几千次重绘拼成一整条长行。
+- 标题与「tmon 运行于 127.0.0.1:<端口>」；tmon 没起来时这一行变红显示「tmon 没有响应」。
+- 「重新加载」重挂内嵌页面；「在浏览器打开」用系统浏览器打开同一个地址，方便对照或全屏。
+
+网页里的功能就是 tmon 自己的：任务列表、实时输出、给任务发输入、停止运行中的任务、复制任务 id。
 
 tmon 没在运行时，面板不会报错，而是显示「连不上 tmon」、它读到的端口和启动办法。这一条是刻意的：服务没起来是面板的普通状态，不是故障。
 
 ## 它怎么拿到数据
 
-tmon 的 HTTP API 只接受 Host 和 Origin 都是本机的请求，所以浏览器的页面不能直接调它。于是本插件分两半：
+tmon 的 HTTP API 只接受 Host 和 Origin 都是本机的请求。内嵌的页面自己就是 `127.0.0.1:<端口>`，所以它的请求天然带对的 Origin，可以直接调；面板唯一需要宿主帮忙的是「端口是多少、tmon 在不在」。
 
 | 半边 | 职责 |
 | --- | --- |
-| 宿主 `index.js` | 在组合的 `webServer` 上注册 `GET /tmon/status`、`GET /tmon/tasks` 和 `GET /tmon/events?id=<8 位十六进制>&after=<seq>`，用宿主进程的 `fetch` 去调 tmon（不带 Origin），端口从 `~/.tmon/port` 读。 |
-| 客户端 `client.js` | 会话顶部 View 标签 `conversation.view`（id `tmon`，order 40）打开后挂在主面板 `main`（键 `tmon`），轮询上面三个路由。 |
+| 宿主 `index.js` | 注册 `GET /tmon/status`：端口从 `~/.tmon/port` 读，用宿主进程的 `fetch` 探一次 `/api/health`，返回 `{ reachable, port, version }`。 |
+| 客户端 `client.js` | 会话顶部 View 标签 `conversation.view`（id `tmon`，order 40）打开后挂在主面板 `main`（键 `tmon`），每 10 秒问一次 `/tmon/status`，拿到端口就把 `http://127.0.0.1:<端口>/` 塞进 iframe。 |
 
-三个路由都经 `ctx.connection.requestRejection` 把关，和内置路由一样拒绝不可信来源；任何失败都以 HTTP 200 加 `reachable: false` 加 `reason` 返回，把「没开」当数据而不是错误。`/tmon/events` 对不是 8 位十六进制的 `id` 直接返回 400。
-
-事件由 tmon 逐条写进每个任务的 `stream.jsonl`，所以任务跑完之后仍然能回看完整输出，不依赖它在不在内存里。
+路由经 `ctx.connection.requestRejection` 把关，和内置路由一样拒绝不可信来源；探测失败也以 HTTP 200 加 `reachable: false` 加 `reason` 返回，把「没开」当数据而不是错误。
 
 ## 自带的使用说明（skill）
 
@@ -135,10 +133,9 @@ pnpm dsh plugin --profile desktop remove dsh-tmon
 
 ## 已知边界
 
-- 只看不控：面板不提供 kill / input，杀命令和交互请用 tmon 自己的页面或 `tmon kill`。
-- 输出只在点开任务时读，不常驻：列表页只拿任务元数据，详情页才去拉事件，避免每 4 秒搬一次全量输出。
-- 详情不是终端模拟器：控制序列被丢弃，所以全屏交互式程序（vim、top）在详情里只能看到它们刷过的文本行。这类命令请开 tmon 网页。
-- 轮询间隔列表 4 秒、详情 1.5 秒，进度条不是逐帧的。
+- 面板就是 tmon 的网页，所以它的功能边界等于 tmon 的边界：这里没有比 tmon 网页更多的能力，只是把它放到会话里。
+- 内嵌页面靠 iframe 加载 `http://127.0.0.1:<端口>`。如果哪天 Harness 给页面加了限制 iframe 的 CSP，或 tmon 改成拒绝被嵌入，这里会显示空白——那时用「在浏览器打开」仍可用。
+- 端口每 10 秒才问一次，tmon 换端口后最多 10 秒才反映到面板上；「重新加载」会立刻重问一次。
 - 技能不检查命令行：`tmon` 不在 PATH 上时技能照样注册，模型会照着说明去调一个不存在的命令。插件只负责把那说明递过去，装没装 tmon 是环境的事。
 - 系统提示里的提醒同样无条件注入，不探测 tmon 在不在（理由见上面「系统提示里的一段提醒」）。它多占的提示长度是固定的一小段，不随会话变化。
 - 插件不负责安装 tmon：`@qiu745/tmon` 要自己 `npm install -g`，插件与它的唯一联系是 `~/.tmon` 这个目录和它开的本地端口。
