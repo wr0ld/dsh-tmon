@@ -74,7 +74,9 @@ const PROMPT_TEXT = 'tmon is installed on this machine and records every command
   + 'which is what separates a stuck task from a slow one. '
   + 'Pass `id` for one task. Its output comes back whole up to 100 lines; anything longer reports how long it is and is read by page '
   + '(`offset` 1 = newest page, 2, 3… on back through the output, -1 = everything), so read the reported length before deciding whether you need more. '
-  + 'One answer carries at most 2000 lines: `-1` on longer output returns the newest 2000 and says so, and paging reads the rest.'
+  + 'One answer carries at most 2000 lines: `-1` on longer output returns the newest 2000 and says so, and paging reads the rest. '
+  + 'Omit `id` to list tasks: the listing always states how many are recorded and how they split across statuses, and `status` narrows it to one of '
+  + 'them, so you can find what failed or what is still running without reading the whole list.'
   + 'For background runs, progress reporting (`tmon progress`, `tmon stage`), and the known traps, read the `tmon` skill.'
 
 
@@ -177,6 +179,13 @@ const MAX_OUTPUT_LINES = 2000
  * continues.
  */
 const MAX_LINE_CHARS = 500
+
+/**
+ * The states tmon records for a task. Listing can be narrowed to one of them,
+ * and every listing reports how many tasks sit in each, so a reader learns what
+ * is there without paging through all of it.
+ */
+const TASK_STATUSES = ['running', 'success', 'failed', 'killed', 'error']
 
 /**
  * Read every one of a task's events, so the last timestamp is known.
@@ -426,6 +435,29 @@ function renderReport(args, value) {
   if (typeof args?.id === 'string' && args.id.trim() !== '' && value.tasks.length === 0) {
     return `No task ${String(args.id)}. ${String(value.reason ?? '')}`.trim()
   }
+  const header = []
+  if (value.counts) {
+    const distribution = TASK_STATUSES
+      .filter(status => (value.counts[status] ?? 0) > 0)
+      .map(status => `${status} ${String(value.counts[status])}`)
+      .join(', ')
+    const total = value.total ?? value.tasks.length
+    const filtered = typeof args?.status === 'string' ? args.status.trim() : ''
+    if (total === 0) {
+      header.push('No tasks recorded yet.')
+    } else if (filtered !== '') {
+      header.push(
+        `Tasks with status "${filtered}": showing ${String(value.tasks.length)} of `
+        + `${String(value.matched ?? value.tasks.length)} matching, ${String(total)} recorded `
+        + `(${distribution === '' ? 'none' : distribution})`,
+      )
+    } else {
+      header.push(
+        `Tasks: showing ${String(value.tasks.length)} of ${String(total)} recorded `
+        + `(${distribution === '' ? 'none' : distribution})`,
+      )
+    }
+  }
   const lines = value.tasks.map(task => {
     const quiet = task.silenceMs === undefined
       ? (task.settled ? '  (no output recorded)' : '  no output yet')
@@ -490,7 +522,8 @@ function renderReport(args, value) {
       }
     }
   }
-  return [...lines, ...(notes.length > 0 ? ['', ...notes] : [])].join('\n')
+  const blocks = [header, lines, notes].filter(block => block.length > 0)
+  return blocks.map(block => block.join('\n')).join('\n\n')
 }
 
 /** @param ctx - plugin context. */
@@ -632,7 +665,12 @@ export function apply(ctx) {
           },
           limit: {
             type: 'number',
-            description: 'How many tasks to list when `id` is omitted (default 10, max 50).',
+            description: 'How many tasks to list when `id` is omitted (default 10, max 50). The result always says how many tasks are recorded in total and how they split across statuses, so a filter plus this count is enough to find anything.',
+          },
+          status: {
+            type: 'string',
+            enum: ['running', 'success', 'failed', 'killed', 'error'],
+            description: 'When `id` is omitted, list only tasks in this state. Use it to find what failed or what is still running without reading the whole list.',
           },
           tail: {
             type: 'number',
@@ -682,6 +720,20 @@ export function apply(ctx) {
             pageCount: { type: 'number' },
             whole: { type: 'boolean' },
             truncated: { type: 'boolean' },
+            total: { type: 'number' },
+            matched: { type: 'number' },
+            counts: {
+              type: 'object',
+              properties: {
+                running: { type: 'number' },
+                success: { type: 'number' },
+                failed: { type: 'number' },
+                killed: { type: 'number' },
+                error: { type: 'number' },
+              },
+              required: ['running', 'success', 'failed', 'killed', 'error'],
+              additionalProperties: false,
+            },
           },
           required: ['reachable', 'tasks'],
           additionalProperties: false,
@@ -739,10 +791,33 @@ export function apply(ctx) {
           }
           const body = await request(port, '/api/tasks')
           const all = Array.isArray(body?.tasks) ? body.tasks : []
+          const wantedStatus = typeof args?.status === 'string' ? args.status.trim() : ''
+          if (wantedStatus !== '' && !TASK_STATUSES.includes(wantedStatus)) {
+            return {
+              reachable: true,
+              port,
+              tasks: [],
+              reason: `status must be one of ${TASK_STATUSES.join(', ')}`,
+            }
+          }
+          // Counted over every recorded task, not over the page being returned:
+          // the counts are what tells a reader the list is longer than it looks.
+          const counts = { running: 0, success: 0, failed: 0, killed: 0, error: 0 }
+          for (const task of all) {
+            if (TASK_STATUSES.includes(task?.status)) counts[task.status] += 1
+          }
+          const matching = wantedStatus === '' ? all : all.filter(task => task?.status === wantedStatus)
           const limit = clamp(args?.limit, 10, 50)
-          const slice = all.slice(0, Math.max(limit, 1))
+          const slice = matching.slice(0, Math.max(limit, 1))
           const facts = await Promise.all(slice.map(task => summarise(port, task)))
-          return { reachable: true, port, tasks: facts }
+          return {
+            reachable: true,
+            port,
+            tasks: facts,
+            counts,
+            total: all.length,
+            matched: matching.length,
+          }
         } catch (error) {
           return {
             reachable: false,

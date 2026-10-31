@@ -51,11 +51,28 @@ tmon "npm run build" &        # tmon: task 7f2a9c3e started
 
 | 参数 | 作用 |
 | --- | --- |
-| 不传 | 列出最近的任务（默认 10 条） |
+| 不传 | 列出最近的任务（默认 10 条），并说明一共记录了多少、各状态各几个 |
 | `id` | 看单个任务，8 位十六进制 |
 | `limit` | 列表条数，默认 10，最多 50 |
+| `status` | 只看某个状态：`running` / `success` / `failed` / `killed` / `error` |
 | `tail` | 给 `id` 时附带最近 N 行输出，默认 20，最多 200，0 表示不要 |
 | `offset` | 页码：`1` 是最新一页，`2`、`3`… 往回翻，`-1` 要全部（上限 2000 行）。默认等同 `1` |
+
+### 任务太多怎么找
+
+列表默认只给 10 条，但每次都会带上总量和各状态的分布，例如：
+
+```
+Tasks: showing 10 of 47 recorded (success 40, failed 4, killed 1, error 2)
+```
+
+看到这行就知道有什么、有多少被截掉了。要找特定的东西，用 `status` 过滤，不用一页页翻：
+
+```
+Tasks with status "failed": showing 4 of 4 matching, 47 recorded (success 40, failed 4, killed 1, error 2)
+```
+
+常见用法：刚起了一个任务想确认它还在跑，用 `status: "running"`；想复盘刚才哪一步炸了，用 `status: "failed"`。`error` 要留意——它多半是 tmon 重启把运行中的任务误标了，不代表命令失败（见下面的陷阱）。
 
 ### 返回什么
 
