@@ -57,14 +57,19 @@ const PROMPT_ORDER = 1650
  * wrap a command, the two constraints that break silently, and where to look
  * when a task stops talking. Parameter rules live on the parameters and the
  * measured traps live in the skill, so neither is repeated here.
+ *
+ * The trigger is written as "could this take a while" rather than "is this
+ * long", because the failure mode is not a wrong threshold: it is the agent
+ * deciding for itself that a command looks fast and skipping the wrapper.
  */
-const PROMPT_TEXT = 'tmon records every command run through it. '
-  + 'When a command is expected to take more than about 30 seconds (downloads, builds, batch jobs, migrations, long test runs), '
-  + 'run it as `tmon "<command>"` instead of calling the shell directly: behaviour and exit code are unchanged, and the user can '
-  + 'watch and cancel it from the 「命令终端」tab in the conversation View row. '
-  + 'Pass the whole command as one string, and never nest tmon\'s own subcommands (ls, status, wait, show, kill, progress, stage) inside it. '
-  + 'When a task looks hung, call `tmon_tasks` instead of guessing or re-running the command: it reports how long the task has been silent, '
-  + 'which is what separates stuck from slow. '
+const PROMPT_TEXT = 'tmon records every command run through it, so the user can watch and cancel from the 「命令终端」tab in the conversation View row. '
+  + 'Run a command through it as `tmon "<command>"` whenever it could plausibly take more than about ten seconds, produce an unbounded amount of output, '
+  + 'or wait on something outside this machine: package installs, builds, test suites, migrations, downloads, `git push`/`fetch`/`clone`, CI runs, network calls. '
+  + 'Do not estimate the duration first and conclude that it looks fast — that estimate is the thing that is usually wrong. '
+  + 'Never sit in a `sleep`-and-poll loop to watch your own command, and never re-run a command to find out whether the first one finished: that is what tmon and `tmon_tasks` are for. '
+  + 'Wrapping changes neither the behaviour nor the exit code, so it costs nothing to be wrong in that direction. '
+  + 'Pass the whole command as one string, and never nest tmon subcommands (ls, status, wait, show, kill, progress, stage) inside it. '
+  + 'When a task looks hung, call `tmon_tasks`: it reports how long the task has been silent, which is what separates stuck from slow. '
   + 'If the shell reports that `tmon` is not found, the user has not installed it yet: say so and give the one-line fix, '
   + '`npm install -g @qiu745/tmon` (needs Node 22.18 or newer), then wait for them — do not retry the command and do not quietly fall back to running it unwrapped. '
   + 'Read the `tmon` skill before running a long job in the background or reporting progress from inside a script.'

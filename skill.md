@@ -23,6 +23,8 @@ tmon "rsync -a /data/ /backup/"
 
 **不要用 `bash -c` 套一层**（原因见下面的坑）。脚本先写进文件，再 `tmon "bash /path/to/x.sh"`。
 
+**不要自己用 `sleep` 轮询盯命令。** 想看进度就用 `tmon_tasks`，想等结束就用 `tmon wait <id>`（退出码透传）；`sleep 20; 再看一眼` 这种写法既看不见中间过程，又浪费一轮往返，还可能把一次正常的长任务误判成卡死。
+
 需要后台执行时用 shell 的后台化，tmon 会在 stderr 打印任务 id：
 
 ```
