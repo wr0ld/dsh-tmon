@@ -94,13 +94,13 @@ tmon --help                     # 确认命令可用（不会留下任务记录�
 装好 tmon 之后，再装插件。从 npm 装：
 
 ```sh
-pnpm dsh plugin --profile desktop add dsh-tmon
+dsh plugin --profile web add dsh-tmon
 ```
 
-或者从源码目录装（路径必须以 `./` 开头）：
+`--profile` 换成你实际在用的那个（桌面客户端是 `desktop`）。也可以从源码目录装，路径必须以 `./` 开头：
 
 ```sh
-pnpm dsh plugin --profile desktop add ./plugins/dsh-tmon
+dsh plugin --profile desktop add ./plugins/dsh-tmon
 ```
 
 装完重开 Harness，会话顶部 View 标签行出现「命令终端」，点开就是面板。
@@ -108,7 +108,7 @@ pnpm dsh plugin --profile desktop add ./plugins/dsh-tmon
 ## 卸载
 
 ```sh
-pnpm dsh plugin --profile desktop remove dsh-tmon
+dsh plugin --profile desktop remove dsh-tmon
 ```
 
 这只移除插件，不动 tmon 本身。要连 tmon 一起清掉，官方给的顺序是（[tmon README](https://github.com/cy745/tmon/blob/main/README.zh-CN.md#%E5%8D%B8%E8%BD%BD)）：
