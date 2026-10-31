@@ -132,12 +132,18 @@ window.__ModuleLoader__.load({
     const ANSI = /\u001b\[[0-9;?]*[ -/]*[@-~]|\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)|\u001b[@-Z\\-_]/g
 
     /**
-     * @param data - raw PTY output from a tmon task event.
-     * @returns the same text without control sequences, with `\r` line breaks
-     *   normalized; carriage-return overwrites are kept as separate lines
-     *   because the panel has no cursor to move.
+     * Moves the cursor back over the line it is on: a carriage return, cursor
+     * home, and column one. A progress bar redraws this way thousands of times
+     * without ever writing a line break, so without this the whole run arrives
+     * as one enormous line.
      */
-    const plainText = data => data.replace(ANSI, '').replace(/\r\n?/g, '\n')
+    const OVERWRITE = /\r(?!\n)|\u001b\[H|\u001b\[1;1H|\u001b\[1?G/g
+
+    /**
+     * Stands in for an overwrite until the text that replaces the line arrives;
+     * a marker with nothing after it is dropped with the line it cancelled.
+     */
+    const OVERWRITE_MARK = '\u0000'
 
     /** How each tmon status reads, and what colour its dot takes. */
     const STATUS = {
@@ -149,6 +155,66 @@ window.__ModuleLoader__.load({
 
     /** Style for a status, falling back to the neutral one tmon may add later. */
     const statusOf = status => STATUS[status] ?? { key: 'statusUnknown', color: 'var(--dsw-alias-state-idle-primary)' }
+
+    /**
+     * Turns a task's events into the blocks the panel prints: output text in
+     * terminal order, and the stage/progress/status lines interleaved with it.
+     * @param events - tmon task events, oldest first.
+     * @param t - translate function for this namespace.
+     * @returns `{ kind: 'output', stderr, text }` and `{ kind: 'note', text }`
+     *   runs; output text always ends with a line break.
+     */
+    function outputRuns(events, t) {
+      const runs = []
+      let buffer = ''
+      let overwritten = false
+      let bufferStderr = false
+
+      const commit = () => {
+        const text = buffer
+        buffer = ''
+        overwritten = false
+        if (text.trim() === '') return
+        const last = runs[runs.length - 1]
+        if (last !== undefined && last.kind === 'output' && last.stderr === bufferStderr) last.text += `${text}\n`
+        else runs.push({ kind: 'output', stderr: bufferStderr, text: `${text}\n` })
+      }
+
+      for (const event of events) {
+        if (event?.type === 'output' && typeof event.data === 'string') {
+          bufferStderr = event.stream === 'stderr'
+          const text = event.data.replace(OVERWRITE, OVERWRITE_MARK).replace(ANSI, '').replace(/\r\n/g, '\n')
+          for (const char of text) {
+            if (char === '\n') commit()
+            else if (char === OVERWRITE_MARK) overwritten = true
+            else {
+              if (overwritten) {
+                buffer = ''
+                overwritten = false
+              }
+              buffer += char
+            }
+          }
+        } else if (event?.type === 'stage' && typeof event.name === 'string') {
+          commit()
+          runs.push({ kind: 'note', text: t('stage', { name: event.name }) })
+        } else if (event?.type === 'progress' && typeof event.pct === 'number') {
+          commit()
+          runs.push({ kind: 'note', text: t('progress', { pct: Math.round(event.pct) }) })
+        } else if (event?.type === 'status') {
+          commit()
+          const noted = statusOf(event.status)
+          runs.push({
+            kind: 'note',
+            text: typeof event.exitCode === 'number'
+              ? `${t(noted.key)} · ${t('exitCode', { code: event.exitCode })}`
+              : t(noted.key),
+          })
+        }
+      }
+      commit()
+      return runs
+    }
 
     /** Panel styles; every colour is a theme token so light and dark both work. */
     const styles = {
@@ -280,7 +346,6 @@ window.__ModuleLoader__.load({
         fontSize: '12px',
         lineHeight: 1.5,
         wordBreak: 'break-all',
-        flex: 1,
         minWidth: 0,
       },
       output: {
@@ -288,7 +353,6 @@ window.__ModuleLoader__.load({
         padding: '10px 12px',
         flex: 1,
         minHeight: '160px',
-        maxHeight: '52vh',
         overflow: 'auto',
         fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
         fontSize: '12px',
@@ -437,38 +501,10 @@ window.__ModuleLoader__.load({
           : null,
       ].filter(Boolean)
 
-      const runs = []
-      for (const event of state.events) {
-        if (event?.type === 'output' && typeof event.data === 'string') {
-          const text = plainText(event.data)
-          if (text === '') continue
-          const last = runs[runs.length - 1]
-          if (last !== undefined && last.kind === 'output' && last.stderr === (event.stream === 'stderr')) {
-            last.text += text
-          } else {
-            runs.push({ kind: 'output', stderr: event.stream === 'stderr', text })
-          }
-        } else if (event?.type === 'stage' && typeof event.name === 'string') {
-          runs.push({ kind: 'note', text: t('stage', { name: event.name }) })
-        } else if (event?.type === 'progress' && typeof event.pct === 'number') {
-          runs.push({ kind: 'note', text: t('progress', { pct: Math.round(event.pct) }) })
-        } else if (event?.type === 'status') {
-          const noted = statusOf(event.status)
-          runs.push({
-            kind: 'note',
-            text: typeof event.exitCode === 'number'
-              ? `${t(noted.key)} · ${t('exitCode', { code: event.exitCode })}`
-              : t(noted.key),
-          })
-        }
-      }
-
-      // A PTY opens its task by clearing the screen, which survives as blank
-      // lines at the head of the first output run; they push real text down.
-      if (runs.length > 0 && runs[0].kind === 'output') {
-        runs[0].text = runs[0].text.replace(/^\n+/, '')
-        if (runs[0].text === '') runs.shift()
-      }
+      // Rendered the way a terminal would: text accumulates into a line, a line
+      // break commits it, and an overwrite discards whatever the line held so
+      // far. Progress bars therefore end up as one live line, not thousands.
+      const runs = outputRuns(state.events, t)
 
       return h('div', { style: styles.detail },
         h('div', { style: styles.detailBar },
