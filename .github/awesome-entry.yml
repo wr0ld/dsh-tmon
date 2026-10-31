@@ -1,0 +1,24 @@
+# Entry submitted to awesome-dsh-plugin.
+#
+# Target: https://github.com/awesome-dsh-plugin/awesome-dsh-plugin
+# Path:   data/plugins/wr0ld__dsh-tmon.yml
+#
+# Submission rules that shaped this file:
+# - one YAML file per plugin, named <owner>__<repo>.yml
+# - only description.en is required; zh is optional
+# - a description containing ": " must be quoted, otherwise YAML reads it as
+#   a nested key
+# - icon must be a GitHub-hosted raster image (SVG is refused)
+# - the description is checked against the code before merging, so it states
+#   only what the plugin does
+#
+# The repository has to be at least one day old; it was created
+# 2026-10-31T16:10:41Z, so it qualifies from 2026-11-01T16:10:41Z.
+
+url: https://github.com/wr0ld/dsh-tmon
+name: wr0ld/dsh-tmon
+category: tools
+description:
+  en: "Brings tmon's long-command monitoring into DSH: a 「命令终端」conversation tab embeds tmon's own web workbench, and a `tmon_tasks` tool reports each task's status, silence, elapsed time and last progress or stage report so the model can tell a stuck command from a slow one. Requires the tmon CLI."
+  zh: "把 tmon 的长耗时命令监控搬进 DSH：会话里的「命令终端」标签页嵌入 tmon 自己的工作台，`tmon_tasks` 工具报告每个任务的状态、静默时长、已用时间与最后一次进度/阶段上报，模型据此判断命令是卡死还是只是慢。需先安装 tmon CLI。"
+icon: https://raw.githubusercontent.com/wr0ld/dsh-tmon/main/assets/icon-180.png
