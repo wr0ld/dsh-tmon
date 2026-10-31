@@ -162,6 +162,25 @@ rm -rf ~/.tmon              # 可选：清掉任务数据与 token
 
 `skill.md` 的 frontmatter 只读 `name` 和 `description` 两个字段，不引入 YAML 依赖；缺 `description` 时直接抛错，而不是注册一个不能被发现的技能。`source` 是必填的，标为 `bundled`——漏了它技能能进目录，但加载时会报 `source must be a string`。
 
+## 发布
+
+首次发布需要 2FA 验证码：
+
+```sh
+npm publish --access public --otp=<6 位验证码>
+```
+
+之后的版本走 npm Trusted Publishing（OIDC），不需要任何 token：
+
+1. 在 npmjs.com 的包设置里加一个 Trusted Publisher：Organization 填 `wr0ld`、Repository 填 `dsh-tmon`、Workflow 填 `publish.yml`。
+2. 改 `package.json` 的版本号，提交，然后打 tag 推送：
+
+```sh
+git tag v0.2.0 && git push origin v0.2.0
+```
+
+`.github/workflows/publish.yml` 会校验 tag 与 `package.json` 版本一致后发布，并自动生成 provenance。注意 `repository.url` 必须与 GitHub 仓库完全一致，否则 OIDC 校验会失败。
+
 ## License
 
 [MIT](LICENSE)
