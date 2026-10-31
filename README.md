@@ -91,7 +91,13 @@ tmon --help                     # 确认命令可用（不会留下任务记录�
 
 `~/.tmon`（端口文件、`server.pid`、`token`、`tasks/`）是第一次真正用它跑命令时才建出来的，只跑 `--help` 不会建。
 
-装好 tmon 之后，再在仓库根目录装插件：
+装好 tmon 之后，再装插件。从 npm 装：
+
+```sh
+pnpm dsh plugin --profile desktop add dsh-tmon
+```
+
+或者从源码目录装（路径必须以 `./` 开头）：
 
 ```sh
 pnpm dsh plugin --profile desktop add ./plugins/dsh-tmon
@@ -155,3 +161,7 @@ rm -rf ~/.tmon              # 可选：清掉任务数据与 token
 ### 技能文件的解析
 
 `skill.md` 的 frontmatter 只读 `name` 和 `description` 两个字段，不引入 YAML 依赖；缺 `description` 时直接抛错，而不是注册一个不能被发现的技能。`source` 是必填的，标为 `bundled`——漏了它技能能进目录，但加载时会报 `source must be a string`。
+
+## License
+
+[MIT](LICENSE)

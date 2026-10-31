@@ -1,9 +1,31 @@
 {
   "name": "dsh-tmon",
   "version": "0.1.0",
-  "private": true,
-  "description": "Show tmon's monitored commands inside the Harness: a 「命令终端」panel lists every tmon task with its state, last stage and progress, and hands live output to tmon's own page.",
+  "description": "Bring tmon's long-command workbench into the Harness: a 「命令终端」tab embeds tmon's own web page, a `tmon_tasks` tool lets the model tell a stuck command from a slow one, and a bundled skill plus system-prompt section keep it in the loop.",
   "type": "module",
+  "license": "MIT",
+  "author": "wr0ld",
+  "homepage": "https://github.com/wr0ld/dsh-tmon#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wr0ld/dsh-tmon.git"
+  },
+  "bugs": {
+    "url": "https://github.com/wr0ld/dsh-tmon/issues"
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "plugin",
+    "tmon",
+    "terminal",
+    "monitor",
+    "long-running",
+    "ai-agent"
+  ],
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
   "icon": "icon.svg",
   "exports": {
     ".": "./index.js",
