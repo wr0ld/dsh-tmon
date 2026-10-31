@@ -170,6 +170,15 @@ const WHOLE_OUTPUT_LINES = 100
 const MAX_OUTPUT_LINES = 2000
 
 /**
+ * Most characters one line may carry. A line count alone does not bound an
+ * answer: a program that redraws a progress bar writes megabytes without ever
+ * emitting a newline, and a single such line would walk past the line ceiling
+ * unnoticed. Clipped lines say how much was cut so the reader knows the text
+ * continues.
+ */
+const MAX_LINE_CHARS = 500
+
+/**
  * Read every one of a task's events, so the last timestamp is known.
  * `stream.jsonl` is append-only and survives the task, so this works for a
  * task that already ended.
@@ -254,29 +263,88 @@ function sendJson(res, status, payload) {
 }
 
 /**
- * Strip terminal control sequences so a model reads text, not escapes.
- * @param raw - one output chunk.
- * @returns the visible text.
+ * Marks where the cursor went back to column 0, so the text after it overwrites
+ * the line instead of extending it. `\r` is a carriage return; `ESC[H`,
+ * `ESC[1;1H` and `ESC[1G` move the cursor home. A carriage return followed by a
+ * newline is a line break, not an overwrite, and is left for the newline pass.
  */
-function plainText(raw) {
+const OVERWRITE_MARK = '\u0000'
+const OVERWRITE = /\r(?!\n)|\u001b\[H|\u001b\[1;1H|\u001b\[1?G/g
+
+/** Every other terminal control sequence, removed so a model reads text. */
+const ANSI = /\u001b\[[0-9;?]*[ -/]*[@-~]|\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)|\u001b[@-Z\\-_]/g
+
+/**
+ * One output chunk as text, control sequences removed and every cursor-home
+ * sequence left as an overwrite marker.
+ * @param raw - one output chunk.
+ * @returns the visible text, with `OVERWRITE_MARK` where the line restarts.
+ */
+function chunkText(raw) {
   return String(raw ?? '')
-    // eslint-disable-next-line no-control-regex
-    .replace(/\u001b\[[0-9;?]*[ -/]*[@-~]|\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)|\u001b[@-Z\\-_]/g, '')
+    .replace(OVERWRITE, OVERWRITE_MARK)
+    .replace(ANSI, '')
     .replace(/\r\n?/g, '\n')
 }
 
 /**
+ * Clip a line to the character ceiling, saying how much was dropped.
+ * @param line - one rendered line.
+ * @returns the line, clipped if it was too long.
+ */
+function clipLine(line) {
+  if (line.length <= MAX_LINE_CHARS) return line
+  const dropped = line.length - MAX_LINE_CHARS
+  return `${line.slice(0, MAX_LINE_CHARS)} … (${dropped} more characters)`
+}
+
+/**
  * Every non-empty output line of a task, control sequences removed.
+ *
+ * The renderer follows the terminal rules the tmon web view follows, so a model
+ * reads the same text a person does. A carriage return or a cursor-home
+ * sequence sends the cursor back to column 0, so the next text replaces the
+ * line being built rather than extending it: a progress bar redrawn a thousand
+ * times is one line holding its latest state, not a thousand concatenated
+ * frames. A newline ends the line. The line being built is kept until it is
+ * replaced, so a task whose last act was a redraw still reports that redraw.
  * @param events - the task's events.
  * @returns the lines in order.
  */
 function linesOf(events) {
-  return events
-    .filter(event => event?.type === 'output')
-    .map(event => plainText(event.data))
-    .join('')
-    .split('\n')
-    .filter(line => line.trim() !== '')
+  const lines = []
+  let buffer = ''
+  let overwritten = false
+
+  const flush = () => {
+    if (buffer.trim() !== '') lines.push(clipLine(buffer))
+    buffer = ''
+  }
+
+  for (const event of events) {
+    if (event?.type !== 'output') continue
+    const parts = chunkText(event.data).split(OVERWRITE_MARK)
+    for (let index = 0; index < parts.length; index += 1) {
+      const segments = parts[index].split('\n')
+      for (let position = 0; position < segments.length; position += 1) {
+        const segment = segments[position]
+        if (position > 0) {
+          flush()
+          overwritten = false
+        }
+        if (segment === '') continue
+        if (overwritten) {
+          buffer = ''
+          overwritten = false
+        }
+        buffer += segment
+      }
+      if (index < parts.length - 1) overwritten = true
+    }
+  }
+
+  flush()
+  return lines
 }
 
 /**
