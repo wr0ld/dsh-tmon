@@ -1,12 +1,33 @@
 # dsh-tmon
 
-把 [tmon](https://www.npmjs.com/package/@qiu745/tmon) 的工作台搬进 Harness：会话顶部多一个「命令终端」标签，里面是 tmon 自己的网页；`tmon` 技能带上它的使用说明，系统提示里有一段提醒模型把长命令套进 tmon；`tmon_tasks` 工具让模型能查任务状态和输出。**tmon 本身要先自己装好，这个插件只显示它记录的东西。**
+把 [tmon](https://github.com/cy745/tmon) 的工作台搬进 Harness：会话顶部多一个「命令终端」标签，里面是 tmon 自己的网页；`tmon` 技能带上它的使用说明，系统提示里有一段提醒模型把长命令套进 tmon；`tmon_tasks` 工具让模型能查任务状态和输出。**tmon 本身要先自己装好，这个插件只显示它记录的东西。**
 
-## 这是什么
+## 它解决的是什么问题
 
-tmon 是一个独立的长命令工作台：把命令放到后台跑，把输出、阶段、进度记在 `~/.tmon`，并开一个本地网页给人看。这个插件不重做这些事，它把那个网页搬进 Harness 的会话面板，再补上模型那一侧。
+tmon 官方把自己的用途说得很直接：
 
-之所以直接嵌网页而不是重画一套：tmon 的界面本身就是终端模拟器，自己实现只会一直落后于它。这个插件真正增加的是「不用离开会话」和「让模型也能读」。
+> AI Agent 执行长任务（大文件下载、编译、数据迁移）时，往往会放到后台——**状态完全不可见**：你无法判断它是卡死了、在缓慢爬行、还是即将完成；出问题时也没有任何干预手段。
+>
+> — [tmon README](https://github.com/cy745/tmon/blob/main/README.zh-CN.md)
+
+原话是 "you can't tell if it's stuck, crawling, or about to finish"（[English README](https://github.com/cy745/tmon)），包的描述则是 *Real-time terminal monitoring & control for AI Agent long-running commands*。
+
+一句话：**防止 AI 卡在一条命令上**——既包括命令真的卡住，也包括模型不知道自己卡住、只能靠猜和超时硬判。
+
+官方的解法是一层透明代理：
+
+```bash
+tmon "curl -o big.bin https://example.com/big.bin"
+```
+
+对调用方行为完全一致（同样的输出、同样的退出码），同时把每一行输出连同时间戳记下来，于是「卡死」和「缓慢」在时间轴上就分得开；人还能在网页终端里一键取消、代答交互提示。
+
+这个插件做两件事，分别补上这条链的两端：
+
+- **人那一侧**：把 tmon 的工作台搬进会话面板，不用切窗口、不用记端口。
+- **模型那一侧**：`tmon_tasks` 把「卡了没有」从猜测变成可查的事实——距上次输出多久、已跑多久、最近一次进度上报是什么。
+
+之所以直接嵌网页而不是重画一套：tmon 的界面本身就是终端模拟器，自己实现只会一直落后于它。
 
 ## 插件提供什么
 
@@ -84,6 +105,14 @@ pnpm dsh plugin --profile desktop add ./plugins/dsh-tmon
 pnpm dsh plugin --profile desktop remove dsh-tmon
 ```
 
+这只移除插件，不动 tmon 本身。要连 tmon 一起清掉，官方给的顺序是（[tmon README](https://github.com/cy745/tmon/blob/main/README.zh-CN.md#%E5%8D%B8%E8%BD%BD)）：
+
+```sh
+tmon kill-server            # server 是 detached 长驻进程，不会随 npm 卸载退出
+npm rm -g @qiu745/tmon
+rm -rf ~/.tmon              # 可选：清掉任务数据与 token
+```
+
 ## 配置
 
 无。端口跟着 `~/.tmon/port` 走；tmon 换端口不需要改这里。宿主读取 `$TMON_HOME`（默认 `~/.tmon`）。
@@ -96,6 +125,7 @@ pnpm dsh plugin --profile desktop remove dsh-tmon
 - 提示段和技能都不检查命令行：`tmon` 不在 PATH 上时它们照样注入，模型会照着去调一个不存在的命令。插件只负责把说明递过去，装没装 tmon 是环境的事。
 - 提示段同样无条件注入，不探测 tmon 在不在（理由见下）。
 - 插件不负责安装 tmon：与它的唯一联系是 `~/.tmon` 这个目录和它开的本地端口。
+- 面板继承了 tmon 的访问模型：官方对本机浏览器访问默认免认证（[安全模型](https://github.com/cy745/tmon/blob/main/README.zh-CN.md#%E5%AE%89%E5%85%A8%E6%A8%A1%E5%9E%8B)），所以能打开你这台机器浏览器的人就能看到任务输出。插件没有改变这一点，也没有额外加一层。
 - `tmon_tasks` 不做判断，只报事实：`verdict` 是按静默时长分的档，命令本来该不该有输出仍要调用者结合命令本身判断。
 
 ## 实现札记

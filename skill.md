@@ -33,12 +33,14 @@ tmon "npm run build" &        # tmon: task 7f2a9c3e started
 
 ## 上报进度
 
-在由 tmon 启动的脚本里可以直接调 tmon 子命令（tmon 会自动注入所需环境变量）：
+在由 tmon 启动的脚本里可以直接调这两个子命令（tmon 会注入 `TMON_TASK_ID`，它们靠它找到任务）：
 
 ```
 tmon progress 45 "解压中"     # 百分比 + 阶段消息
 tmon stage "编译"             # 仅阶段名
 ```
+
+在 tmon 之外调用会直接报错 `未在 tmon 任务环境中运行（缺少 TMON_TASK_ID）`——所以只能写在被 `tmon "..."` 包起来的那条命令里，不能在外面补报。
 
 用户能在面板里看到进度条和当前阶段，模型能从 `tmon_tasks` 的 `lastPct` / `lastStage` 读到同样的数字。**写长脚本时主动加这两条，比让人盯着日志猜要可靠得多。**
 
@@ -68,10 +70,22 @@ tmon status 7f2a9c3e          # running / success / failed / killed / error
 tmon show 7f2a9c3e --tail 20  # 输出快照（已剥离 ANSI）
 tmon show 7f2a9c3e --full     # 全部输出
 tmon wait 7f2a9c3e            # 阻塞等待完成，退出码透传
+tmon wait 7f2a9c3e --timeout=600   # 最多等 600 秒
 tmon kill 7f2a9c3e            # 取消任务
 ```
 
-`tmon show` 只有 `--tail N` 和 `--full` 两种，没有偏移参数，读中间一段要拿 `--full` 自己切。`tmon wait` 会一直阻塞，别在不确定任务是否活跃时直接等。
+`tmon show` 只有 `--tail N` 和 `--full` 两种，没有偏移参数，读中间一段要拿 `--full` 自己切。
+
+**`tmon wait` 的退出码不全是命令的退出码**，别把等待本身的结果当成命令失败：
+
+| 退出码 | 含义 |
+| --- | --- |
+| 命令自己的退出码 | 任务结束，成功时是 `0` |
+| `124` | **等待超时**（`--timeout` 到点），命令可能还在跑 |
+| `130` | 任务被取消（SIGINT） |
+| `1` | 任务 id 不存在 |
+
+不带 `--timeout` 会一直阻塞，所以在不确定任务是否活跃时给它一个超时。
 
 ## 踩过的坑（都是实测复现过的）
 
