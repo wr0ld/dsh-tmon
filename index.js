@@ -58,13 +58,15 @@ const PROMPT_ORDER = 1650
  * when a task stops talking. Parameter rules live on the parameters and the
  * measured traps live in the skill, so neither is repeated here.
  */
-const PROMPT_TEXT = 'tmon is installed on this machine and records every command run through it. '
+const PROMPT_TEXT = 'tmon records every command run through it. '
   + 'When a command is expected to take more than about 30 seconds (downloads, builds, batch jobs, migrations, long test runs), '
   + 'run it as `tmon "<command>"` instead of calling the shell directly: behaviour and exit code are unchanged, and the user can '
   + 'watch and cancel it from the 「命令终端」tab in the conversation View row. '
   + 'Pass the whole command as one string, and never nest tmon\'s own subcommands (ls, status, wait, show, kill, progress, stage) inside it. '
   + 'When a task looks hung, call `tmon_tasks` instead of guessing or re-running the command: it reports how long the task has been silent, '
   + 'which is what separates stuck from slow. '
+  + 'If the shell reports that `tmon` is not found, the user has not installed it yet: say so and give the one-line fix, '
+  + '`npm install -g @qiu745/tmon` (needs Node 22.18 or newer), then wait for them — do not retry the command and do not quietly fall back to running it unwrapped. '
   + 'Read the `tmon` skill before running a long job in the background or reporting progress from inside a script.'
 
 
