@@ -53,25 +53,19 @@ const PROMPT_SECTION = 'tool:tmon'
 const PROMPT_ORDER = 1650
 
 /**
- * The core usage, short enough to repeat in every request. It stands on its
- * own: a model that never opens the `tmon` skill can still wrap a command
- * correctly from this text alone. The skill holds the details (background
- * polling, progress reporting) and the traps, which are not worth paying for
- * on every turn.
+ * The policy that has to fire without anyone reading anything first: when to
+ * wrap a command, the two constraints that break silently, and where to look
+ * when a task stops talking. Parameter rules live on the parameters and the
+ * measured traps live in the skill, so neither is repeated here.
  */
 const PROMPT_TEXT = 'tmon is installed on this machine and records every command run through it. '
   + 'When a command is expected to take more than about 30 seconds (downloads, builds, batch jobs, migrations, long test runs), '
   + 'run it as `tmon "<command>"` instead of calling the shell directly: behaviour and exit code are unchanged, and the user can '
-  + 'watch its progress and cancel it from the 「命令终端」tab in the conversation View row. '
-  + 'Quote the whole command as one string, and never nest tmon\'s own subcommands (ls, status, wait, show, kill, progress, stage) inside it. '
-  + 'To see how a task is doing, call `tmon_tasks` instead of guessing: it reports the last output time, elapsed time, and the last progress/stage report, '
-  + 'which is what separates a stuck task from a slow one. '
-  + 'Pass `id` for one task. Its output comes back whole up to 100 lines; anything longer reports how long it is and is read by page '
-  + '(`offset` 1 = newest page, 2, 3… on back through the output, -1 = everything), so read the reported length before deciding whether you need more. '
-  + 'One answer carries at most 2000 lines: `-1` on longer output returns the newest 2000 and says so, and paging reads the rest. '
-  + 'Omit `id` to list tasks: the listing always states how many are recorded and how they split across statuses, and `status` narrows it to one of '
-  + 'them, so you can find what failed or what is still running without reading the whole list.'
-  + 'For background runs, progress reporting (`tmon progress`, `tmon stage`), and the known traps, read the `tmon` skill.'
+  + 'watch and cancel it from the 「命令终端」tab in the conversation View row. '
+  + 'Pass the whole command as one string, and never nest tmon\'s own subcommands (ls, status, wait, show, kill, progress, stage) inside it. '
+  + 'When a task looks hung, call `tmon_tasks` instead of guessing or re-running the command: it reports how long the task has been silent, '
+  + 'which is what separates stuck from slow. '
+  + 'Read the `tmon` skill before running a long job in the background or reporting progress from inside a script.'
 
 
 /**
@@ -590,8 +584,7 @@ export function apply(ctx) {
         + 'Use it instead of guessing when a tmon command seems to hang, when you need a progress percentage or stage, '
         + 'or before deciding whether to wait or intervene. '
         + 'Each task gets the facts that separate "stuck" from "slow": its status, how long since the last output, '
-        + 'elapsed time, and the last progress/stage report tmon received. '
-        + 'Omit `id` to list tasks newest first; pass an eight-hex-digit `id` for one task with its recent output.',
+        + 'elapsed time, and the last progress/stage report tmon received.',
       parameters: {
         type: 'object',
         properties: {
