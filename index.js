@@ -42,6 +42,9 @@ export const TMON_TASKS_PATH = '/tmon/tasks'
 /** Route returning one task's recorded events, selected by `id` and `after`. */
 export const TMON_EVENTS_PATH = '/tmon/events'
 
+/** Route that stops a running task, selected by `id`. */
+export const TMON_KILL_PATH = '/tmon/kill'
+
 /** tmon task ids are eight lowercase hex digits. */
 const TASK_ID = /^[0-9a-f]{8}$/
 
@@ -145,6 +148,34 @@ async function request(port, path) {
   })
   if (!response.ok) throw new Error(`HTTP ${String(response.status)}`)
   return await response.json()
+}
+
+/**
+ * POST to one tmon endpoint and report the answer instead of throwing on it.
+ * Stopping a task has meaningful refusals — it already finished, or its
+ * executor is gone — and the panel shows that sentence rather than a generic
+ * failure, so the status and tmon's own message travel back together.
+ * @param port - the loopback port tmon listens on.
+ * @param path - the endpoint path, beginning with a slash.
+ * @param body - the JSON body to send.
+ * @returns `{ ok, reason }`, where `ok` is true only for a 2xx answer.
+ */
+async function postJson(port, path, body) {
+  const response = await fetch(`http://127.0.0.1:${String(port)}${path}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+  })
+  let payload = null
+  try {
+    payload = await response.json()
+  } catch {
+    payload = null
+  }
+  if (response.ok) return { ok: true, reason: null }
+  const message = typeof payload?.error === 'string' ? payload.error : `HTTP ${String(response.status)}`
+  return { ok: false, reason: message }
 }
 
 /**
@@ -630,6 +661,31 @@ export function apply(ctx) {
       }
     },
   }), `tmon: GET ${TMON_EVENTS_PATH}`)
+
+  ctx.effect(() => ctx.webServer.register({
+    kind: 'exact',
+    path: TMON_KILL_PATH,
+    handler: async (req, res) => {
+      if (rejected(req, res)) return
+      if (req.method !== 'POST') {
+        methodNotAllowed(res)
+        return
+      }
+      const query = new URL(req.url ?? '/', 'http://localhost').searchParams
+      const id = query.get('id') ?? ''
+      if (!TASK_ID.test(id)) {
+        sendJson(res, 400, { reachable: false, port: null, ok: false, reason: 'id must be eight hex digits' })
+        return
+      }
+      const port = await readPort()
+      try {
+        const result = await postJson(port, `/api/tasks/${id}/kill`, { signal: 'SIGINT' })
+        sendJson(res, 200, { reachable: true, port, ok: result.ok, reason: result.reason })
+      } catch (error) {
+        sendJson(res, 200, { reachable: false, port, ok: false, reason: String(error?.message ?? error) })
+      }
+    },
+  }), `tmon: POST ${TMON_KILL_PATH}`)
 
   // Compositions without a prompt registry or a skill registry still get the
   // panel; only these two contributions are optional, so the dependencies are

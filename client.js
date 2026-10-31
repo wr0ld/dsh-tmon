@@ -30,6 +30,9 @@ window.__ModuleLoader__.load({
     /** Host route returning one task's recorded events. */
     const EVENTS_ROUTE = 'tmon/events'
 
+    /** Host route that stops a running task. */
+    const KILL_ROUTE = 'tmon/kill'
+
     /** A task list that updates within seconds is enough to feel live. */
     const POLL_MS = 4000
 
@@ -69,6 +72,11 @@ window.__ModuleLoader__.load({
         loadingOutput: '正在读取输出…',
         outputEmpty: '这个任务没有记录到输出',
         openHint: '点击任务查看输出',
+        stop: '停止',
+        stopping: '正在停止…',
+        copyId: '复制 id',
+        copied: '已复制',
+        stopFailed: '停止失败：{reason}',
       },
       en: {
         nav: 'Terminal',
@@ -101,6 +109,11 @@ window.__ModuleLoader__.load({
         loadingOutput: 'Reading output…',
         outputEmpty: 'This task recorded no output',
         openHint: 'Click a task to see its output',
+        stop: 'Stop',
+        stopping: 'Stopping…',
+        copyId: 'Copy id',
+        copied: 'Copied',
+        stopFailed: 'Stop failed: {reason}',
       },
     }
 
@@ -433,7 +446,44 @@ window.__ModuleLoader__.load({
       const settled = task.status !== 'running'
       const status = statusOf(task.status)
       const [state, setState] = React.useState({ events: [], loading: true, reason: null })
+      const [busy, setBusy] = React.useState(false)
+      const [notice, setNotice] = React.useState(null)
+      const [copied, setCopied] = React.useState(false)
       const lastSeq = React.useRef(0)
+
+      React.useEffect(() => {
+        if (!copied) return undefined
+        const timer = setTimeout(() => { setCopied(false) }, 1500)
+        return () => { clearTimeout(timer) }
+      }, [copied])
+
+      const stop = async () => {
+        setBusy(true)
+        setNotice(null)
+        try {
+          const response = await fetch(`${KILL_ROUTE}?id=${encodeURIComponent(task.id)}`, {
+            method: 'POST',
+            headers: { accept: 'application/json' },
+          })
+          const body = await response.json()
+          if (body?.ok !== true) {
+            setNotice(t('stopFailed', { reason: typeof body?.reason === 'string' ? body.reason : 'unknown' }))
+          }
+        } catch (error) {
+          setNotice(t('stopFailed', { reason: String(error?.message ?? error) }))
+        } finally {
+          setBusy(false)
+        }
+      }
+
+      const copy = async () => {
+        try {
+          await navigator.clipboard.writeText(task.id)
+          setCopied(true)
+        } catch (error) {
+          setNotice(String(error?.message ?? error))
+        }
+      }
 
       React.useEffect(() => {
         lastSeq.current = 0
@@ -510,6 +560,16 @@ window.__ModuleLoader__.load({
         h('div', { style: styles.detailBar },
           h('button', { type: 'button', style: styles.button, onClick: () => { props.onBack() } }, t('back')),
           h('span', { style: { ...styles.statusLabel, color: status.color } }, t(status.key)),
+          h('button', { type: 'button', style: styles.button, onClick: () => { void copy() } }, copied ? t('copied') : t('copyId')),
+          task.status === 'running'
+            ? h('button', {
+              type: 'button',
+              style: { ...styles.button, color: 'var(--dsw-alias-state-error-primary)' },
+              disabled: busy,
+              onClick: () => { void stop() },
+            }, busy ? t('stopping') : t('stop'))
+            : null,
+          notice === null ? null : h('span', { style: styles.noticeBody }, notice),
         ),
         h('div', { style: styles.detailCommand }, task.cmd ?? ''),
         h('div', { style: styles.meta }, ...meta),
