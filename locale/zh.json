@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "命令终端",
+    "description": "在 Harness 里查看 tmon 托管的命令：状态、阶段、进度一目了然，需要实时输出时一键跳到 tmon 网页。"
+  }
+}

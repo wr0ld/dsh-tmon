@@ -1,0 +1,13 @@
+# dsh-tmon bundle patch.
+#
+# The host half answers two routes on the composition's `webServer`:
+#
+# - `GET /tmon/status` — whether the tmon service answers, and on which port.
+# - `GET /tmon/tasks`  — tmon's own task list, read from the Host process.
+#
+# The routes exist because tmon only answers callers whose Origin is its own
+# page, so the browser half cannot reach `127.0.0.1:<port>` directly. The
+# client half adds the 「命令终端」tab to the session view row, opening the panel under `main`.
+- insert:
+    - id: tmon
+      name: dsh-tmon

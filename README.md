@@ -1,0 +1,120 @@
+# dsh-tmon
+
+Show the commands [tmon](https://www.npmjs.com/package/@qiu745/tmon) is tracking inside the Harness: a 「命令终端」panel lists every task with its state, last stage and progress, clicking a task opens that task's recorded output, tmon's own usage guide is registered as the `tmon` skill, and a short system-prompt section reminds the model to wrap long commands. **tmon itself is a separate CLI you install first — this plugin only displays what tmon records.**
+
+## 这是什么
+
+tmon 是一个独立的长命令工作台：它把命令放到后台跑，把输出、阶段、进度记在 `~/.tmon`，并开一个本地网页给人看。这个插件不重做这些事，只是把 tmon 已经记录的任务搬进 Harness 的会话面板，让你在会话里就能看到「刚才那条命令跑到哪了」，需要看实时输出时再一键跳到 tmon 网页。
+
+## 面板里有什么
+
+- 状态点：运行中 / 成功 / 失败 / 已取消。
+- 命令原文，一行截断，悬停可看全。
+- 任务 id、开始时间、已运行或总用时、退出码、最近一次 `tmon stage` 上报的阶段名。
+- 最近一次 `tmon progress` 上报的百分比，带进度条。
+- 右上角「刷新」和「打开 tmon 网页」；面板每 4 秒自己刷新一次。
+- 点任意一行展开这个任务的详情：完整输出（stdout 正常色、stderr 红）、阶段、进度和状态变更按时间顺序夹在输出里；运行中的任务每 1.5 秒追加新输出，已结束的任务一次性读全。左侧「← 返回列表」回到列表。
+
+输出是终端原始流，其中的光标定位、清屏、颜色等控制序列会被去掉再显示；用 `\r` 原地刷新的进度行会各占一行，因为面板没有光标可以回退。
+
+tmon 没在运行时，面板不会报错，而是显示「连不上 tmon」、它读到的端口和启动办法。这一条是刻意的：服务没起来是面板的普通状态，不是故障。
+
+## 它怎么拿到数据
+
+tmon 的 HTTP API 只接受 Host 和 Origin 都是本机的请求，所以浏览器的页面不能直接调它。于是本插件分两半：
+
+| 半边 | 职责 |
+| --- | --- |
+| 宿主 `index.js` | 在组合的 `webServer` 上注册 `GET /tmon/status`、`GET /tmon/tasks` 和 `GET /tmon/events?id=<8 位十六进制>&after=<seq>`，用宿主进程的 `fetch` 去调 tmon（不带 Origin），端口从 `~/.tmon/port` 读。 |
+| 客户端 `client.js` | 会话顶部 View 标签 `conversation.view`（id `tmon`，order 40）打开后挂在主面板 `main`（键 `tmon`），轮询上面三个路由。 |
+
+三个路由都经 `ctx.connection.requestRejection` 把关，和内置路由一样拒绝不可信来源；任何失败都以 HTTP 200 加 `reachable: false` 加 `reason` 返回，把「没开」当数据而不是错误。`/tmon/events` 对不是 8 位十六进制的 `id` 直接返回 400。
+
+事件由 tmon 逐条写进每个任务的 `stream.jsonl`，所以任务跑完之后仍然能回看完整输出，不依赖它在不在内存里。
+
+## 自带的使用说明（skill）
+
+插件把 `skill.md` 注册成名为 `tmon` 的技能，内容就是 `tmon skill` 打印的那份指引（何时用、三种用法、注意事项），另加一段说明这个面板能看什么。这样模型在决定要不要把命令套进 tmon 时，看到的是 tmon 作者写的那份说明，而不是靠猜。
+
+注册用的是 `ctx.skills.register()`，来源标为 `bundled`。这一步挂在 `ctx.inject(['skills'], …)` 上：没有技能服务的组合照样能加载面板，只是不会多出这个技能。`skill.md` 的 frontmatter 只读 `name` 和 `description` 两个字段，不引入 YAML 依赖；缺 `description` 时直接抛错，而不是注册一个不能被发现的技能。
+
+## 系统提示里的一段提醒
+
+光有技能还不够：技能只有被模型想起来才会去读，而模型默认的做法是直接调 shell 工具。所以插件还往系统提示里加一段（`ctx.systemPrompt.section()`，名称 `tool:tmon`，order 1650，排在 shell 与后台任务两条工具说明之后），内容是「这台机器装了 tmon，预计超过 30 秒的命令请用 `tmon "<command>"` 包起来，用户可以在命令终端里看进度和取消；第一次用之前先读 `tmon` 技能」。
+
+两点需要知道：
+
+- **它不会自己检查 tmon 是否存在。** 插件启用 = 你要用 tmon，提示段就无条件注入。之所以不做「每轮 stat 一下 `~/.tmon/port` 再决定加不加」，是因为那样提示会在会话中途变长变短，破坏前缀缓存，而收益只是在一台没装 tmon 的机器上少一句废话。代价是：**tmon 没装、或者被卸掉了，这段提醒照样在**，模型会照着它去调一个不存在的命令，报错之后才会发现。装 tmon 是前提，见下面「安装」。
+- 段落挂在 `ctx.inject(['systemPrompt'], …)` 上，和技能一样是可选依赖：没有系统提示服务的组合照样加载面板，只是不会多出这段文字。
+
+## 面板给用户看，`tmon_tasks` 给模型看
+
+面板要有人盯着屏幕才有用，而模型看不到屏幕。所以插件还注册了一个工具 `tmon_tasks`：
+
+| 参数 | 作用 |
+| --- | --- |
+| 不传 | 列出最近的任务 |
+| `id` | 看单个任务（8 位十六进制） |
+| `limit` | 列表条数（默认 10，最多 50） |
+| `tail` | 给了 `id` 时附带最近 N 行输出（默认 20，最多 200，0 表示不要） |
+| `offset` | 页码：`1` 是最新一页，`2`、`3`… 一路往回翻，`-1` 要全部（超过 2000 行会被截断）。默认不传等同 `1` |
+
+每个任务返回一组事实而不是一个是非：状态、`verdict`（`active` / `silent` / `silent-long` / `finished` / `unknown`）、已运行时长、**距上次输出多久**、最近一次 `progress` 百分比与 `stage` 名称、输出行数。之所以给「距上次输出多久」而不是直接给「卡住了没有」，是因为静默本身判断不了：一个下载一个编译一个 `sleep` 都可能几十秒不打印任何东西，只有把静默时长和这个命令本来该不该有输出放在一起，才能区分「卡」和「慢」。
+
+工具描述里还写了两条实测出来的陷阱：`status: error` 且没有 `exitCode` 多半是 tmon 服务器重启时把运行中的任务误标了，不代表命令失败；`~/.tmon/tasks/<id>/meta.json` 不可信（运行中读不到、结束后仍读不到），要拿状态只能走 HTTP 接口。
+
+### 长输出怎么读完
+
+100 行以内不管传什么页码都整份返回，并在标题里写明「全部 N 行」——几行的输出不值得再要一次。
+
+超过 100 行才分页，`tail` 决定每页多大（默认 20，最多 200），`offset` 是页码：`1` 是最新一页，`2`、`3`… 一路往回翻，最后一页正好结束在第一行。所以每个页码都只会走同一个方向，不会重复也不会漏。
+
+返回里给的是让模型自己判断要不要继续的信息，不是替它做的决定：`totalLines` 说输出一共多少行，`pageCount` 说分几页，`page` 说这次给的是第几页，底部那行提示只列出真正存在的下一页、`page 1`（当不在第一页时）和 `-1`。
+
+页码越界会报错而不是返回空页——读到空结果意味着「没有了」，而页码写错意味着「你要的那一页不存在」，两者混淆会让模型以为自己读完了。报错里会写明实际有多少页、可用范围是多少。
+
+`-1` 也有上限：单次最多 2000 行，超了就返回**最新的** 2000 行，并在标题里写明总行数、被截断、以及「读更早的行请翻页」。实测输出平均每行约 70 字节，2000 行约 5.4 万 token；不封顶的话一个 5000 行的构建日志就是 14 万 token，几百万行的刷屏能把上下文一次吃光。截断时底部提示不再说「`-1` 读全部」（已经读过了），只说当前页能往哪翻。
+
+之所以让工具自己支持翻页，而不是让模型改走 `tmon show --full`：`--full` 会把整份输出塞进一次工具结果，长任务能到几万行，既撑爆上下文也绕开了这里已经做好的 ANSI 剥离与状态误标校正。CLI 那条路保留在技能里当兜底，不是常规路径。
+
+注册走 `ctx.inject(['tools'], …)`，和提示段、技能一样是可选依赖。工具是纯 JS 对象直接交给 `tools.register()`，没有 import `defineTool`——这个插件在 profile 里是 `link:` 进来的，解析不到 `@deepseek-ai/dsh-tools`。输出 schema 用的是 Harness 支持的 JSON Schema 子集，`type` 只接受单个字符串，所以值为未知的字段一律省略而不是给 `null`。
+
+## 安装
+
+**前置条件：tmon 得先自己装好，这个插件不会替你装。** 插件不含 tmon 的任何代码，只是读它写下的文件、调它开的本地接口。没装 tmon 时插件能装上、面板能打开，但会一直显示「连不上 tmon」，提示段也仍然会叫模型去用一条不存在的命令。
+
+```sh
+npm install -g @qiu745/tmon     # 需要 Node >= 22.18
+tmon --help                     # 确认命令可用（不会留下任务记录）
+```
+
+`~/.tmon`（端口文件、`server.pid`、`token`、`tasks/`）是第一次真正用它跑命令时才建出来的，只跑 `--help` 不会建。
+
+装好 tmon 之后，再在仓库根目录装插件：
+
+```sh
+pnpm dsh plugin --profile desktop add ./plugins/dsh-tmon
+```
+
+装完重开 Harness，会话顶部 View 标签行出现「命令终端」，点开就是面板。
+
+## 卸载
+
+```sh
+pnpm dsh plugin --profile desktop remove dsh-tmon
+```
+
+## 配置
+
+无。端口跟着 `~/.tmon/port` 走；tmon 换端口不需要改这里。宿主读取 `$TMON_HOME`（默认 `~/.tmon`）。
+
+## 已知边界
+
+- 只看不控：面板不提供 kill / input，杀命令和交互请用 tmon 自己的页面或 `tmon kill`。
+- 输出只在点开任务时读，不常驻：列表页只拿任务元数据，详情页才去拉事件，避免每 4 秒搬一次全量输出。
+- 详情不是终端模拟器：控制序列被丢弃，所以全屏交互式程序（vim、top）在详情里只能看到它们刷过的文本行。这类命令请开 tmon 网页。
+- 轮询间隔列表 4 秒、详情 1.5 秒，进度条不是逐帧的。
+- 技能不检查命令行：`tmon` 不在 PATH 上时技能照样注册，模型会照着说明去调一个不存在的命令。插件只负责把那说明递过去，装没装 tmon 是环境的事。
+- 系统提示里的提醒同样无条件注入，不探测 tmon 在不在（理由见上面「系统提示里的一段提醒」）。它多占的提示长度是固定的一小段，不随会话变化。
+- 插件不负责安装 tmon：`@qiu745/tmon` 要自己 `npm install -g`，插件与它的唯一联系是 `~/.tmon` 这个目录和它开的本地端口。
+- `tmon_tasks` 不做判断，只报事实：`verdict` 是按静默时长分的档，命令本来该不该有输出这一步仍要调用者自己结合命令本身去判断。
