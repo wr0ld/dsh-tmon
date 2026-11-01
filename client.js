@@ -337,10 +337,9 @@ window.__ModuleLoader__.load({
 
       return h('div', { style: styles.root }, header, restartNotice,
         h('iframe', {
-          // The session id belongs in the key: switching session changes the
-          // URL but React would reuse the same iframe and only patch `src`,
-          // leaving the page showing the session it loaded with.
-          key: `web-${String(frameKey)}-${sessionId ?? 'all'}`,
+          // The reload counter belongs in the key: changing only `src` would
+          // leave React reusing the frame and never re-running the page.
+          key: `web-${String(frameKey)}`,
           title: t('panelTitle'),
           src: pageUrl,
           style: styles.frame,
