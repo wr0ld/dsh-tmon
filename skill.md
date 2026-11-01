@@ -91,7 +91,7 @@ tmon kill 7f2a9c3e            # 取消任务
 
 ## 踩过的坑（都是实测复现过的）
 
-**`tmon --version` 会被记成一条失败任务。** 任何不是已知子命令的参数都会被当成要执行的命令：`cmd: "--version"`、`status: failed`、`exitCode: 1`。已知子命令只有 `last` `ls` `status` `show` `wait` `kill` `progress` `stage` `skill` `kill-server` `serve`。不要为了查装没装去跑 `tmon --version`：直接用 `tmon "<cmd>"`，shell 报找不到 tmon 时再让用户 `npm install -g @qiu745/tmon`（需要 Node 22.18+）。
+**`tmon --version` 会被记成一条失败任务。** 任何不是已知子命令的参数都会被当成要执行的命令：`cmd: "--version"`、`status: failed`、`exitCode: 1`。已知子命令只有 `last` `ls` `status` `show` `wait` `kill` `progress` `stage` `skill` `kill-server` `serve`。不要为了查装没装去跑 `tmon --version`：直接用 `tmon "<cmd>"`；shell 报找不到 tmon 时，说明插件自带的副本缺失或损坏，当作插件问题告诉用户，不要换别的办法重跑。
 
 **`tmon bash -c '...'` 会把引号打散。** 实测记下的 `cmd` 是 `bash -c for i in 1 2 3 4 5 6 7 8; do echo "step $i ..."; sleep 1.2; do`：外层引号、分号、`done` 全被拆没，任务 `failed`、`exitCode 2`。tmon 会把参数重新拼成一条命令字符串再交给 shell，这一来一回吃掉了嵌套引号。正确做法是脚本写进文件再 `tmon "bash /path/to/x.sh"`。
 
