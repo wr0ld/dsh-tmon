@@ -25,6 +25,7 @@
 import { spawn } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { access, mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { constants } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -73,6 +74,87 @@ const PROMPT_ORDER = 1650
  * long", because the failure mode is not a wrong threshold: it is the agent
  * deciding for itself that a command looks fast and skipping the wrapper.
  */
+/**
+ * Which shell tmon will run the next command in, for the prompt.
+ *
+ * The prompt has to name the shell the commands will actually meet: the agent
+ * writes in whatever dialect it is told it is in, so "some configured shell" is
+ * not enough — it needs `cmd` or `bash` or `pwsh` by name. Reading the config is
+ * the only honest source; when it cannot be read the answer says so rather than
+ * guessing at the platform default.
+ * @returns a short phrase for the prompt, e.g. `bash`.
+ */
+async function configuredShellName() {
+  let configured = ''
+  try {
+    const raw = await readFile(join(tmonHome(), 'config.json'), 'utf8')
+    const parsed = JSON.parse(raw)
+    if (parsed !== null && typeof parsed === 'object' && typeof parsed.shell === 'string') {
+      configured = parsed.shell.trim()
+    }
+  } catch (_absentOrUnreadable) {
+    // No config yet: tmon uses its platform default, named below.
+  }
+
+  const fallback = process.platform === 'win32' ? 'cmd.exe' : '/bin/sh'
+  if (configured === '') return { actual: fallback }
+  // A configured path may point at something that is not there any more; tmon
+  // falls back in that case, and the prompt must not claim otherwise.
+  const base = configured.replace(/\\/gu, '/').split('/').pop() ?? configured
+  const runnable = configured.includes('/') || configured.includes('\\')
+    ? await existsInPath(configured)
+    : await findExecutable(configured)
+  return runnable
+    ? { actual: base }
+    : { actual: fallback, rejected: base }
+}
+
+/**
+ * Whether a path is executable.
+ * @param path - absolute path to test.
+ * @returns true when the file exists and can be executed.
+ */
+async function existsInPath(path) {
+  try {
+    await access(path, constants.X_OK)
+    return true
+  } catch (_missingOrNotExecutable) {
+    return false
+  }
+}
+
+/**
+ * Whether a bare command name resolves on `PATH`.
+ * @param name - command name without a directory.
+ * @returns true when any directory on `PATH` holds it.
+ */
+async function findExecutable(name) {
+  const separator = process.platform === 'win32' ? ';' : ':'
+  const extensions = process.platform === 'win32'
+    ? (process.env.PATHEXT ?? '.EXE;.CMD;.BAT;.COM').split(';')
+    : ['']
+  for (const directory of (process.env.PATH ?? '').split(separator)) {
+    if (directory === '') continue
+    for (const extension of extensions) {
+      if (await existsInPath(join(directory, `${name}${extension}`))) return true
+    }
+    if (await existsInPath(join(directory, name))) return true
+  }
+  return false
+}
+
+/** The prompt text, with the configured shell named each time it is assembled. */
+async function promptText() {
+  const { actual, rejected } = await configuredShellName()
+  // Two whole sentences rather than one template with an aside spliced in: a
+  // rejected setting has to say what was rejected, and a fragment reads as a
+  // typo once the "because" lands mid-clause.
+  const sentence = rejected === undefined
+    ? `The commands inside tmon run under ${actual}, which may differ from the shell this session otherwise uses; write them in that dialect.`
+    : `The commands inside tmon run under ${actual}: ${rejected} is configured but cannot be executed, so tmon falls back to it.`
+  return PROMPT_TEXT.replace('{{shellSentence}}', sentence)
+}
+
 const PROMPT_TEXT = 'tmon records every command run through it, so the user can watch and cancel from the 「命令终端」tab in the conversation View row. '
   + 'Run a command through it as `tmon "<command>"` whenever it could plausibly take more than about ten seconds, produce an unbounded amount of output, '
   + 'or wait on something outside this machine: package installs, builds, test suites, migrations, downloads, `git push`/`fetch`/`clone`, CI runs, network calls. '
@@ -80,8 +162,8 @@ const PROMPT_TEXT = 'tmon records every command run through it, so the user can 
   + 'Never sit in a `sleep`-and-poll loop to watch your own command, and never re-run a command to find out whether the first one finished: that is what tmon and `tmon_tasks` are for. '
   + 'Any command that itself contains a delay — `sleep`, `timeout`, `ping -n`/`-c` as a pause, a retry loop with backoff, `Start-Sleep`, `timeout /t` — must run through tmon, whatever the total: '
   + 'a bare delay blocks the turn with nothing to watch and nothing to cancel. '
-  + 'The commands inside tmon run in the shell configured in the tmon settings section (cmd.exe by default on Windows, /bin/sh elsewhere, or whatever the user set, such as bash or pwsh), '
-  + 'which may differ from the shell this session otherwise uses: write the command in the configured shell syntax, and do not assume Bash idioms when the configured shell is cmd. '
+  + '{{shellSentence}} '
+  + 'No `$VAR` or Unix quoting when it is cmd; no `/c` habits when it is bash. '
   + 'Wrapping changes neither the behaviour nor the exit code, so it costs nothing to be wrong in that direction. '
   + 'Pass the whole command as one string, and never nest tmon subcommands (ls, status, wait, show, kill, progress, stage) inside it. '
   + 'When a task looks hung, call `tmon_tasks`: it reports how long the task has been silent, which is what separates stuck from slow. '
@@ -1051,7 +1133,18 @@ export function apply(ctx) {
   // panel; only these two contributions are optional, so the dependencies are
   // declared at the call instead of in the plugin's own `inject`.
   ctx.inject(['systemPrompt'], promptCtx => {
-    promptCtx.systemPrompt.section({ name: PROMPT_SECTION, order: PROMPT_ORDER, text: PROMPT_TEXT })
+    // `text` may be a provider evaluated at each assembly, which is what lets
+    // the section name the shell the user has configured right now. A static
+    // string would have to hedge ("some configured shell"), and the agent would
+    // then write for the wrong dialect the moment someone switched to bash.
+    promptCtx.systemPrompt.section({
+      name: PROMPT_SECTION,
+      order: PROMPT_ORDER,
+      text: () => promptText(),
+      // The text is prose about commands; `{{shell}}` is ours, not a prompt
+      // variable, so the framework must not try to interpolate it.
+      interpolate: false,
+    })
   })
 
   // tmon prints `tmon: task <id> started: <cmd>` on stderr for every task it
