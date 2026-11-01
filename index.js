@@ -174,12 +174,75 @@ function nativeBash() {
 }
 
 /**
+ * Whether a shell value names an exact file this machine can run.
+ * @param value - a configured shell, bare name or absolute path.
+ * @returns true when the value is an absolute path that exists.
+ */
+function isAbsoluteShell(value) {
+  const backslash = String.fromCharCode(92)
+  return value.includes('/') || value.includes(backslash)
+    ? nativeBashAt(value) !== null
+    : false
+}
+
+/**
+ * The file at a given bash path, or null when it is not there.
+ * @param path - absolute candidate path.
+ * @returns the path when executable, otherwise null.
+ */
+function nativeBashAt(path) {
+  try {
+    accessSync(path, constants.X_OK)
+    return path
+  } catch (_absent) {
+    return null
+  }
+}
+
+/**
+ * Point tmon's own config at a native `bash` when it holds only a bare name.
+ *
+ * tmon resolves a bare shell name against `PATH` without appending `.exe`, so
+ * `"shell": "bash"` never matches on Windows and every task fails with
+ * `File not found:`. Writing the absolute path once, at start, keeps the user's
+ * choice (they asked for bash) and fixes the resolution. A value that is
+ * already a path, or a different shell such as `pwsh`, is left untouched.
+ * @returns the shell now configured, for the log line.
+ */
+async function pinShellToAbsolutePath() {
+  const configPath = join(tmonHome(), 'config.json')
+  let config = {}
+  try {
+    const raw = await readFile(configPath, 'utf8')
+    const parsed = JSON.parse(raw)
+    if (parsed !== null && typeof parsed === 'object') config = parsed
+  } catch (_absentOrUnreadable) {
+    // No config yet: tmon would use its platform default, nothing to pin.
+    return null
+  }
+  const configured = typeof config.shell === 'string' ? config.shell.trim() : ''
+  if (configured === '') return null
+  if (isAbsoluteShell(configured)) return configured
+  const bare = configured.replace(/\.exe$/iu, '')
+  if (bare !== 'bash' && bare !== 'sh') return null
+  const bash = nativeBash()
+  if (bash === null) return null
+  const updated = { ...config, shell: bash }
+  const temporary = `${configPath}.${String(process.pid)}.tmp`
+  await mkdir(dirname(configPath), { recursive: true })
+  await writeFile(temporary, JSON.stringify(updated, null, 2), { mode: 0o600 })
+  await rename(temporary, configPath)
+  return bash
+}
+
+/**
  * Environment for the tmon server this plugin starts.
  *
  * The server outlives the turn and runs every command in its own shell, so the
- * shell it resolved cannot depend on the model shell's `PATH`. Two things are
- * fixed here: WSL's `bash.exe` is pushed behind a native build, and the profile
- * copy of bash is made reachable. Nothing outside this child changes.
+ * shell it resolves cannot depend on the model shell's `PATH`. The native bash
+ * is put first so a bare name would resolve even where WSL shadows it; the
+ * absolute path written by {@link pinShellToAbsolutePath} is what actually
+ * decides. Nothing outside this child changes.
  * @returns the environment to spawn with.
  */
 function serverEnv() {
@@ -674,6 +737,14 @@ async function cliEntry(cli) {
  * @throws when no tmon can be started, or it does not answer in time.
  */
 async function startServer(port) {
+  // A bare `bash` never resolves on Windows (tmon looks for the name without
+  // `.exe`), so the user's choice is pinned to a real file before spawning.
+  try {
+    await pinShellToAbsolutePath()
+  } catch (_unwritableConfig) {
+    // A read-only home is not a reason to refuse to start: tmon then falls
+    // back to its platform default, which the status route reports.
+  }
   const bundled = bundledEntry()
   let command = null
   let args = null
