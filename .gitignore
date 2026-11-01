@@ -1,4 +1,7 @@
 node_modules/
+# The bundled tmon ships its runtime dependencies; dropping them would make
+# the published package install a CLI that cannot start.
+!vendor/tmon/node_modules/
 pnpm-lock.yaml
 *.log
 .DS_Store
