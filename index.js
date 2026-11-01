@@ -1032,14 +1032,19 @@ export function apply(ctx) {
   // The bundled tmon is not on PATH — installing one there would mean writing
   // into the user's global npm prefix — so the model reaches it through this
   // variable instead. The path is resolved per machine, never baked in.
-  if (ctx.shellEnv !== undefined && hasBundledTmon()) {
-    ctx.effect(() => ctx.shellEnv.register({
-      name: 'dsh-tmon',
-      variables: {
-        [TMON_CLI_KEY]: { description: 'Absolute path to the tmon CLI bundled with this plugin.' },
-      },
-      resolve: () => ({ [TMON_CLI_KEY]: bundledEntry() }),
-    }), 'tmon: model shell variable')
+  // `inject` waits for the service: this plugin's fiber may be mounted before
+  // `shellEnv` exists, and a plain `ctx.shellEnv` read would then be undefined,
+  // silently skipping the contribution.
+  if (hasBundledTmon()) {
+    ctx.inject(['shellEnv'], envCtx => {
+      envCtx.effect(() => envCtx.shellEnv.register({
+        name: 'dsh-tmon',
+        variables: {
+          [TMON_CLI_KEY]: { description: 'Absolute path to the tmon CLI bundled with this plugin.' },
+        },
+        resolve: () => ({ [TMON_CLI_KEY]: bundledEntry() }),
+      }), 'tmon: model shell variable')
+    })
   }
 
   ctx.effect(() => ctx.webServer.register({
