@@ -1,6 +1,6 @@
 {
   "name": "dsh-tmon",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Bring tmon's long-command workbench into the Harness, no separate install: a bundled, patched tmon serves the 「命令终端」 tab, a `tmon_tasks` tool lets the model tell a stuck command from a slow one, and tasks stay scoped to the session that started them.",
   "type": "module",
   "license": "MIT",
