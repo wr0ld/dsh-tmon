@@ -22,8 +22,9 @@
  * @module dsh-tmon
  */
 
+import { spawn } from 'node:child_process'
 import { readFileSync } from 'node:fs'
-import { readFile } from 'node:fs/promises'
+import { access, readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
@@ -140,6 +141,120 @@ async function request(port, path) {
   })
   if (!response.ok) throw new Error(`HTTP ${String(response.status)}`)
   return await response.json()
+}
+
+/**
+ * How long a freshly started server may take to answer. tmon's own launcher
+ * waits five seconds; a cold Node start on a slow disk needs more headroom than
+ * that, and the panel is waiting on exactly one request.
+ */
+const STARTUP_TIMEOUT_MS = 10_000
+
+/** How often to ask the starting server whether it is up yet. */
+const STARTUP_POLL_MS = 250
+
+/** Whether a path exists, for locating the CLI before trying to launch it. */
+async function exists(path) {
+  try {
+    await access(path)
+    return true
+  } catch (_absent) {
+    // Absence is the answer, not a failure: it means "the CLI is not here".
+    return false
+  }
+}
+
+/**
+ * Where the `tmon` executable is, without running a shell to find out.
+ *
+ * `where`/`which` would answer this, but running one to decide whether to run
+ * another is two processes deep from a panel poll. npm puts global binaries
+ * where it says it does, so the search is the directories that can hold one
+ * plus `PATH` itself for every other way tmon gets installed.
+ * @returns the executable path, or null when the CLI is not installed.
+ */
+async function findCli() {
+  const names = process.platform === 'win32' ? ['tmon.cmd', 'tmon.exe'] : ['tmon']
+  const directories = []
+
+  const prefix = process.env.npm_config_prefix ?? process.env.NPM_CONFIG_PREFIX
+  if (prefix !== undefined && prefix !== '') directories.push(join(prefix, 'bin'))
+  const appData = process.env.APPDATA
+  if (appData !== undefined && appData !== '') directories.push(join(appData, 'npm'))
+  for (const entry of (process.env.PATH ?? '').split(process.platform === 'win32' ? ';' : ':')) {
+    if (entry !== '') directories.push(entry)
+  }
+
+  for (const directory of directories) {
+    for (const name of names) {
+      const candidate = join(directory, name)
+      if (await exists(candidate)) return candidate
+    }
+  }
+  return null
+}
+
+/**
+ * Start tmon's server, detached, and wait until it answers.
+ *
+ * The CLI keeps the service alive across invocations — that is how a task
+ * outlives the command that started it — so this launches it exactly the way
+ * the CLI's own `ensureServer` does: `tmon serve`, no stdio, unref'd, which
+ * leaves nothing for the Host to reap.
+ * @param cli - the executable returned by `findCli`.
+ * @param port - the port to expect it on.
+ * @returns the health body once it answers.
+ * @throws when the server does not come up within `STARTUP_TIMEOUT_MS`.
+ */
+/**
+ * The command line that starts tmon's server.
+ *
+ * A `.cmd` shim is a batch file, so on Windows it only runs through cmd.exe, and
+ * that is the one case where `shell` is unavoidable. The argument is a fixed
+ * literal rather than anything derived from input, which is what keeps it safe.
+ * @param cli - the executable returned by `findCli`.
+ * @returns what to spawn, and whether a shell is needed to spawn it.
+ */
+function serveCommand(cli) {
+  if (process.platform !== 'win32') return { command: cli, args: ['serve'], shell: false }
+  if (cli.endsWith('.cmd') || cli.endsWith('.bat')) {
+    return { command: `"${cli}" serve`, args: [], shell: true }
+  }
+  return { command: cli, args: ['serve'], shell: false }
+}
+
+/**
+ * Start tmon's server, detached, and wait until it answers.
+ *
+ * The CLI keeps the service alive across invocations — that is how a task
+ * outlives the command that started it — so this launches it exactly the way
+ * the CLI's own `ensureServer` does: `tmon serve`, no stdio, unref'd, which
+ * leaves nothing for the Host to reap.
+ * @param cli - the executable returned by `findCli`.
+ * @param port - the port to expect it on.
+ * @returns the health body once it answers.
+ * @throws when the server does not come up within `STARTUP_TIMEOUT_MS`.
+ */
+async function startServer(cli, port) {
+  const { command, args, shell } = serveCommand(cli)
+  const child = spawn(command, args, {
+    detached: true,
+    stdio: 'ignore',
+    windowsHide: true,
+    shell,
+  })
+  child.unref()
+
+  const deadline = Date.now() + STARTUP_TIMEOUT_MS
+  while (Date.now() < deadline) {
+    try {
+      return await request(port, '/api/health')
+    } catch (_notUpYet) {
+      // The server is still binding its port; keep asking until the deadline.
+      await new Promise(resolve => setTimeout(resolve, STARTUP_POLL_MS))
+    }
+  }
+  throw new Error(`tmon serve did not answer on port ${String(port)} within ${String(STARTUP_TIMEOUT_MS)} ms`)
 }
 
 /**
@@ -554,17 +669,40 @@ export function apply(ctx) {
         return
       }
       const port = await readPort()
+      let health = null
+      let reason = null
       try {
-        const health = await request(port, '/api/health')
-        sendJson(res, 200, { reachable: true, port, version: health?.version ?? null })
+        health = await request(port, '/api/health')
       } catch (error) {
-        sendJson(res, 200, {
-          reachable: false,
-          port,
-          version: null,
-          reason: String(error?.message ?? error),
-        })
+        reason = String(error?.message ?? error)
       }
+
+      // A stopped server is the plugin's problem to solve, not the user's: the
+      // CLI is what owns the service, so start it and report only the case it
+      // cannot fix — the CLI is not installed at all.
+      if (health === null) {
+        const cli = await findCli()
+        if (cli === null) {
+          sendJson(res, 200, { reachable: false, port, version: null, installed: false, reason })
+          return
+        }
+        try {
+          health = await startServer(cli, port)
+          sendJson(res, 200, { reachable: true, port, version: health?.version ?? null, installed: true, started: true })
+        } catch (error) {
+          sendJson(res, 200, {
+            reachable: false,
+            port,
+            version: null,
+            installed: true,
+            started: false,
+            reason: `${String(error?.message ?? error)} (${String(reason)})`,
+          })
+        }
+        return
+      }
+
+      sendJson(res, 200, { reachable: true, port, version: health?.version ?? null, installed: true, started: false })
     },
   }), `tmon: GET ${TMON_STATUS_PATH}`)
 

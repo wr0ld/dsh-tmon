@@ -38,8 +38,11 @@ window.__ModuleLoader__.load({
         reload: '重新加载',
         openPage: '在浏览器打开',
         loading: '正在读取 tmon…',
-        unavailable: '连不上 tmon',
-        unavailableHint: '这台机器上没有正在运行的 tmon。如果命令提示 tmon 不存在，先装它：npm install -g @qiu745/tmon（需要 Node 22.18+）；装好之后在会话里跑一次 tmon "命令"，tmon 就会启动并写下端口。',
+        starting: 'tmon 没有在运行，正在启动它…',
+        unavailable: '没有安装 tmon',
+        unavailableHint: '这台机器上找不到 tmon 命令。先装它：npm install -g @qiu745/tmon（需要 Node 22.18+），装好之后这里会自动连上。',
+        failed: 'tmon 启动失败',
+        failedHint: 'tmon 已经安装，但服务没有起来。在会话里跑一次 tmon "命令" 可以看它报了什错。',
         portHint: '端口读自 ~/.tmon/port（当前 {port}）',
         readError: '读取失败：{reason}',
       },
@@ -48,11 +51,14 @@ window.__ModuleLoader__.load({
         panelTitle: 'Terminal',
         connectedOn: 'tmon is serving 127.0.0.1:{port}',
         disconnected: 'tmon is not responding',
+        starting: 'tmon is not running; starting it…',
         reload: 'Reload',
         openPage: 'Open in browser',
         loading: 'Reading tmon…',
-        unavailable: 'tmon is unreachable',
-        unavailableHint: 'No tmon service is running on this machine. If the shell says tmon is not found, install it first: npm install -g @qiu745/tmon (needs Node 22.18+). Once installed, run tmon "command" once in a session and tmon starts and writes its port.',
+        unavailable: 'tmon is not installed',
+        unavailableHint: 'The tmon command is not on this machine. Install it first: npm install -g @qiu745/tmon (needs Node 22.18+); this panel connects on its own once it is there.',
+        failed: 'tmon failed to start',
+        failedHint: 'tmon is installed but its service did not come up. Run tmon "command" once in a session to see what it reports.',
         portHint: 'Port comes from ~/.tmon/port (now {port})',
         readError: 'Read failed: {reason}',
       },
@@ -142,6 +148,8 @@ window.__ModuleLoader__.load({
         connected: false,
         port: null,
         reason: null,
+        installed: true,
+        starting: false,
       })
       const [tick, setTick] = React.useState(0)
       const [frameKey, setFrameKey] = React.useState(0)
@@ -158,6 +166,8 @@ window.__ModuleLoader__.load({
               connected: status?.reachable === true,
               port: typeof status?.port === 'number' ? status.port : null,
               reason: typeof status?.reason === 'string' ? status.reason : null,
+              installed: status?.installed !== false,
+              starting: status?.reachable !== true && status?.installed !== false,
             })
           } catch (error) {
             if (cancelled) return
@@ -165,6 +175,7 @@ window.__ModuleLoader__.load({
               ...current,
               loading: false,
               connected: false,
+              starting: false,
               reason: String(error?.message ?? error),
             }))
           }
@@ -180,12 +191,14 @@ window.__ModuleLoader__.load({
 
       const port = typeof snapshot.port === 'number' ? snapshot.port : null
       const pageUrl = port === null ? null : `http://127.0.0.1:${String(port)}/`
+      const subtitle = snapshot.connected
+        ? t('connectedOn', { port: port ?? '—' })
+        : snapshot.starting ? t('starting') : t('disconnected')
 
       const header = h('div', { style: styles.header },
         h('div', { style: styles.heading },
           h('h2', { style: styles.title }, t('panelTitle')),
-          h('span', { style: snapshot.connected ? styles.subtitle : styles.subtitleDown },
-            snapshot.connected ? t('connectedOn', { port: port ?? '—' }) : t('disconnected')),
+          h('span', { style: snapshot.connected ? styles.subtitle : styles.subtitleDown }, subtitle),
         ),
         h('div', { style: styles.actions },
           h('button', {
@@ -208,10 +221,15 @@ window.__ModuleLoader__.load({
       }
 
       if (!snapshot.connected || pageUrl === null) {
+        // Three states, three different things to do about them: no CLI means
+        // install it, a CLI that failed to start means look at why, and a
+        // server this panel is still bringing up means wait.
+        const title = snapshot.installed ? (snapshot.starting ? t('starting') : t('failed')) : t('unavailable')
+        const body = snapshot.installed ? (snapshot.starting ? null : t('failedHint')) : t('unavailableHint')
         return h('div', { style: styles.root }, header,
           h('div', { style: styles.notice },
-            h('span', { style: styles.noticeTitle }, t('unavailable')),
-            h('span', { style: styles.noticeBody }, t('unavailableHint')),
+            h('span', { style: styles.noticeTitle }, title),
+            body === null ? null : h('span', { style: styles.noticeBody }, body),
             h('span', { style: styles.noticeBody }, t('portHint', { port: port === null ? '—' : port })),
             snapshot.reason === null
               ? null
