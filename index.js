@@ -325,6 +325,8 @@ const PROMPT_TEXT = 'tmon records every command run through it, so the user can 
   + '{{shellSentence}} '
   + 'No `$VAR` or Unix quoting when it is cmd; no `/c` habits when it is bash. '
   + 'Wrapping changes neither the behaviour nor the exit code, so it costs nothing to be wrong in that direction. '
+  + 'Leave the shell tool\'s own timeout unset on a tmon-wrapped command: tmon already reports whether the task is alive, '
+  + 'and a shell timeout kills it outright, turning a slow command into an error you cannot watch or cancel. '
   + 'Pass the whole command as one string, and never nest tmon subcommands (ls, status, wait, show, kill, progress, stage) inside it. '
   + 'When a task looks hung, call `tmon_tasks`: it reports how long the task has been silent, which is what separates stuck from slow. '
   + 'If the shell reports that `tmon` is not found, the plugin\'s usable copy is missing or broken: report that as a plugin problem rather than retrying, '
