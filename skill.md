@@ -7,6 +7,8 @@ description: 用 tmon 包装长耗时命令（下载、编译、批量处理、�
 
 tmon 是命令执行追踪工具：命令包进 tmon 后行为与直接执行完全一致（输出原样、退出码透传），同时把输出、阶段、进度记录到 `~/.tmon`，用户可以在 Harness 的「命令终端」标签（会话顶部 View 行）里看进展并一键取消。
 
+**前提**：tmon 由用户自己安装（`npm install -g @qiu745/tmon`，需要 Node 22.18+），`tmon` 不在 `PATH` 上就别往下走——告诉用户装一次，然后等他就位。
+
 查任务优先用 `tmon_tasks` 工具，它的参数与返回字段在工具定义里。下面只讲工具覆盖不到的部分：怎么起任务、怎么上报进度、工具不可用时怎么办、以及实测踩过的坑。
 
 ## 起任务
@@ -29,7 +31,7 @@ tmon "rsync -a /data/ /backup/"
 
 **命令本身带延时，一律走 tmon，不估总时长。** `sleep`、`timeout`、`ping -n`/`-c` 当停顿用、退避重试循环、`Start-Sleep`、`timeout /t` —— 只要命令里有等待，就 `tmon "<命令>"`。裸跑这类命令会把整轮卡住，用户既看不到进度也没法取消，哪怕总时长只有几秒。
 
-**tmon 里跑的是配置的那个 shell，可能和当前会话的 shell 不同。** 默认是 Windows 的 `cmd.exe`、其它平台的 `/bin/sh`；用户可能在 tmon 设置里改成 `bash`、`pwsh` 或某个绝对路径。写命令前先想清楚它在哪个 shell 里展开：`cmd` 里没有 `$VAR`、没有 `&&` 之外的 Unix 习惯，`bash` 里才能用单引号嵌套与管道组合。拿不准就用脚本文件再 `tmon "bash /path/to/x.sh"`，让方言只出现在文件里。
+**tmon 用的是平台默认 shell，可能和当前会话的不同。** Windows 上是 `cmd.exe`，其它平台是 `/bin/sh`，没有配置项可改。写命令前先想清楚它在哪个 shell 里展开：`cmd` 里没有 `$VAR`、没有 `&&` 之外的 Unix 习惯，`bash` 里才能用单引号嵌套与管道组合。要用 bash 的特性就写成脚本文件再 `tmon "bash /path/to/x.sh"`，让方言只出现在文件里。
 
 需要后台执行时用 shell 的后台化，tmon 会在 stderr 打印任务 id：
 

@@ -22,36 +22,6 @@ window.__ModuleLoader__.load({
     /** Locale namespace holding this plugin's text. */
     const NS = 'tmon'
 
-    /**
-     * The session the panel should show, and the listeners waiting for it.
-     *
-     * `conversation.view` is session-scoped and receives a real `sessionId`;
-     * `main` is root-scoped and receives none — its only session-bound key is
-     * the reserved `conversation`. The panel lives in `main`, so the id has to
-     * cross that gap, and a module-level store with a subscription is the
-     * smallest thing that does it without changing either slot's contract.
-     */
-    const sessionBridge = {
-      current: null,
-      listeners: new Set(),
-      set(value) {
-        if (sessionBridge.current === value) return
-        sessionBridge.current = value
-        for (const listener of sessionBridge.listeners) listener(value)
-      },
-      subscribe(listener) {
-        sessionBridge.listeners.add(listener)
-        return () => { sessionBridge.listeners.delete(listener) }
-      },
-    }
-
-    /** Hook: the current session id from the bridge, updated on switch. */
-    function useBridgedSession() {
-      const [value, setValue] = React.useState(sessionBridge.current)
-      React.useEffect(() => sessionBridge.subscribe(setValue), [])
-      return value
-    }
-
     /** Host route reporting whether tmon answers, and on which port. */
     const STATUS_ROUTE = 'tmon/status'
 
@@ -78,23 +48,7 @@ window.__ModuleLoader__.load({
         failedHint: 'tmon 已经安装，但服务没有起来。在会话里跑一次 tmon "命令" 可以看它报了什错。',
         portHint: '端口读自 ~/.tmon/port（当前 {port}）',
         readError: '读取失败：{reason}',
-        settingsIntro: 'tmon 用它启动每条命令。留空就用系统默认的 cmd（Windows）或 /bin/sh。',
-        shellLabel: 'Shell',
-        shellPlaceholder: 'bash，或 C:\\Program Files\\Git\\bin\\bash.exe',
-        shellDetect: '检测',
-        shellSave: '保存',
-        shellDetecting: '正在检测…',
-        shellSaving: '正在保存…',
-        shellEmpty: '留空：使用系统默认 {shell}',
-        shellUsable: '可以执行：{shell}',
-        shellUnusable: '找不到或不可执行：{shell}',
-        shellSaved: '已保存，下次启动任务生效',
-        shellSavedRestart: '已保存，服务已重启',
-        restartNeeded: '设置只在 tmon 重启后生效，重启会中断正在运行的任务。',
         restartConfirm: '现在有 {count} 个任务在运行，重启会中断它们。仍然重启？',
-        restartNone: '现在没有任务在运行。',
-        restartDo: '重启并应用',
-        restartCancel: '取消',
         restarting: '正在重启…',
         restartDone: '已重启，新设置已生效',
         restartFailed: '重启失败：{reason}',
@@ -115,23 +69,7 @@ window.__ModuleLoader__.load({
         failedHint: 'tmon is installed but its service did not come up. Run tmon "command" once in a session to see what it reports.',
         portHint: 'Port comes from ~/.tmon/port (now {port})',
         readError: 'Read failed: {reason}',
-        settingsIntro: 'tmon runs every command through this shell. Leave it empty for the platform default: cmd on Windows, /bin/sh elsewhere.',
-        shellLabel: 'Shell',
-        shellPlaceholder: 'bash, or C:\\Program Files\\Git\\bin\\bash.exe',
-        shellDetect: 'Check',
-        shellSave: 'Save',
-        shellDetecting: 'Checking…',
-        shellSaving: 'Saving…',
-        shellEmpty: 'Empty: uses the platform default {shell}',
-        shellUsable: 'Runs: {shell}',
-        shellUnusable: 'Not found or not executable: {shell}',
-        shellSaved: 'Saved; the next task uses it',
-        shellSavedRestart: 'Saved, and the service restarted',
-        restartNeeded: 'The setting applies only after tmon restarts, and a restart interrupts running tasks.',
         restartConfirm: '{count} task(s) are running; restarting interrupts them. Restart anyway?',
-        restartNone: 'No tasks are running.',
-        restartDo: 'Restart and apply',
-        restartCancel: 'Cancel',
         restarting: 'Restarting…',
         restartDone: 'Restarted; the new setting is in effect',
         restartFailed: 'Restart failed: {reason}',
@@ -335,18 +273,9 @@ window.__ModuleLoader__.load({
       }, [tick])
 
       const port = typeof snapshot.port === 'number' ? snapshot.port : null
-      // tmon is one workbench per machine, so the page opens as a list of every
-      // session's tasks unless told which session is asking. The slot supplies
-      // `sessionId` because `conversation.view` is a session-scoped slot. The
-      // panel is also mounted under the root-scoped `main` slot, which receives
-      // no session at all, so the bridged value is the one to prefer: it is
-      // whichever is non-empty, and it updates when the session switches.
-      const bridgedSession = useBridgedSession()
-      const directSession = typeof props.sessionId === 'string' && props.sessionId !== '' ? props.sessionId : null
-      const sessionId = directSession ?? bridgedSession
-      const pageUrl = port === null
-        ? null
-        : `http://127.0.0.1:${String(port)}/${sessionId === null ? '' : `?session=${encodeURIComponent(sessionId)}`}`
+      // tmon is one workbench per machine: the page opens on every task it has
+      // recorded, for every conversation. The plugin adds no filter of its own.
+      const pageUrl = port === null ? null : `http://127.0.0.1:${String(port)}/`
       const subtitle = snapshot.connected
         ? t('connectedOn', { port: port ?? '—' })
         : snapshot.starting ? t('starting') : t('disconnected')
@@ -434,24 +363,6 @@ window.__ModuleLoader__.load({
           t: typeof props.t === 'function' ? props.t : t,
         })
 
-        /**
-         * The panel as the conversation tab sees it.
-         *
-         * This slot is session-scoped, so its props carry the real id; the
-         * `main` occupant receives none. Reporting it here is what keeps the
-         * embedded page on the session the user is actually looking at.
-         */
-        const ViewPanel = props => {
-          React.useEffect(() => {
-            const value = typeof props.sessionId === 'string' && props.sessionId !== '' ? props.sessionId : null
-            sessionBridge.set(value)
-          }, [props.sessionId])
-          return h(TmonPanel, {
-            ...props,
-            t: typeof props.t === 'function' ? props.t : t,
-          })
-        }
-
         ctx.effect(
           () => ctx.slots.inject('main', () => ctx.slots.register({
             name: 'main',
@@ -468,7 +379,7 @@ window.__ModuleLoader__.load({
             order: 40,
             locale: NS,
             label: () => t('nav'),
-          }, ViewPanel)),
+          }, Panel)),
           'tmon: conversation view tab',
         )
 
