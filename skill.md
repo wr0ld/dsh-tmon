@@ -41,11 +41,11 @@ tmon 是命令执行追踪工具：命令包进 tmon 后行为与直接执行完
 
 ## 上报进度
 
-在由 tmon 启动的脚本里可以直接调这两个子命令（tmon 会注入 `TMON_TASK_ID`，它们靠它找到任务）：
+在由 tmon 启动的脚本里可以用这两个子命令（tmon 会注入 `TMON_TASK_ID`，它们靠它找到任务）。**必须写 `"$DSH_TMON_CLI"`，裸 `tmon` 不在 PATH 上**——直接写 `tmon progress` 会 `command not found`，而任务照样以 0 退出，进度静默丢失：
 
 ```
-tmon progress 45 "解压中"     # 百分比 + 阶段消息
-tmon stage "编译"             # 仅阶段名
+"$DSH_TMON_CLI" progress 45 "解压中"     # 百分比 + 阶段消息
+"$DSH_TMON_CLI" stage "编译"             # 仅阶段名
 ```
 
 在 tmon 之外调用会直接报错 `未在 tmon 任务环境中运行（缺少 TMON_TASK_ID）`——所以只能写在被 `"$DSH_TMON_CLI" "..."` 包起来的那条命令里，不能在外面补报。
