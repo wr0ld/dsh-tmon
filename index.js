@@ -38,6 +38,15 @@ export const inject = ['webServer', 'connection']
 /** Route answering whether the tmon service responds, and on which port. */
 export const TMON_STATUS_PATH = '/tmon/status'
 
+/** Route reading and writing the shell tmon runs commands in. */
+export const TMON_CONFIG_PATH = '/tmon/config'
+
+/** Route that reports whether a shell value typed into settings can run at all. */
+export const TMON_CHECK_PATH = '/tmon/config/check'
+
+/** Route listing the tasks a restart would interrupt. */
+export const TMON_RESTART_PATH = '/tmon/restart'
+
 /** tmon task ids are eight lowercase hex digits. */
 const TASK_ID = /^[0-9a-f]{8}$/
 
@@ -196,6 +205,106 @@ async function request(port, path) {
   if (!response.ok) throw new Error(`HTTP ${String(response.status)}`)
   return await response.json()
 }
+
+/**
+ * POST a JSON body to tmon and return its answer.
+ *
+ * tmon reads configuration through its own server so that the process that
+ * acts on a setting is the one that reports it applied: writing the file here
+ * would leave the running server on the old value until it happened to restart.
+ * @param port - the port tmon answers on.
+ * @param path - tmon's route.
+ * @param body - value serialized as the request body.
+ * @returns the parsed answer.
+ * @throws when tmon answers with a status other than 200.
+ */
+async function postJson(port, path, body) {
+  const response = await fetch(`http://127.0.0.1:${String(port)}${path}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+  })
+  if (!response.ok) throw new Error(`HTTP ${String(response.status)}`)
+  return await response.json()
+}
+
+/**
+ * Every task tmon is still running, for warning before a restart interrupts them.
+ * @param port - the port tmon answers on.
+ * @returns the running tasks, each with at least an id and a command.
+ */
+async function runningTasks(port) {
+  const body = await request(port, '/api/tasks')
+  const tasks = Array.isArray(body?.tasks) ? body.tasks : []
+  return tasks.filter(task => task?.status === 'running')
+}
+
+/**
+ * Stop the running tmon server and start a fresh one.
+ *
+ * tmon reads its shell setting when a task starts, so a saved setting reaches
+ * the next task only after the server that owns the port is replaced. The port
+ * is read before the stop because the stop removes the port file.
+ * @param port - the port the old server answers on.
+ * @returns the port the new server answers on.
+ * @throws when the old server refuses to stop or the new one never answers.
+ */
+async function restartServer(port) {
+  try {
+    await fetch(`http://127.0.0.1:${String(port)}/api/health`, {
+      method: 'GET',
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    })
+  } catch (_alreadyStopped) {
+    // Nothing to stop; starting one is still the right outcome.
+  }
+
+  // `kill-server` is the CLI's own stop path: it signals the pid in server.pid
+  // and removes the port file, so a later start cannot see a stale port.
+  const stop = await tmonCliPath()
+  if (stop !== null) {
+    await new Promise(resolve => {
+      const child = spawn(process.execPath, [stop, 'kill-server'], { stdio: 'ignore', windowsHide: true })
+      child.on('exit', () => { resolve() })
+      child.on('error', () => { resolve() })
+    })
+  }
+
+  const health = await startServer(port)
+  return { port, version: health?.version ?? null }
+}
+
+/**
+ * The tmon entry script this plugin ships, falling back to the global install.
+ * @returns the script path, or null when neither exists.
+ */
+async function tmonCliPath() {
+  const bundled = bundledEntry()
+  if (await exists(bundled)) return bundled
+  const cli = await findCli()
+  return cli === null ? null : await cliEntry(cli)
+}
+
+/**
+ * Read a request body as text, capped so a stuck upload cannot grow without bound.
+ * @param req - the incoming request.
+ * @returns the body text, empty when there is none.
+ */
+async function readBody(req) {
+  const chunks = []
+  let size = 0
+  for await (const chunk of req) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk))
+    size += buffer.length
+    if (size > MAX_BODY_BYTES) throw new Error(`request body over ${String(MAX_BODY_BYTES)} bytes`)
+    chunks.push(buffer)
+  }
+  return Buffer.concat(chunks).toString('utf8')
+}
+
+/** Largest request body the settings routes accept. */
+const MAX_BODY_BYTES = 64 * 1024
 
 /**
  * How long a freshly started server may take to answer. tmon's own launcher
@@ -809,6 +918,95 @@ export function apply(ctx) {
       sendJson(res, 200, { reachable: true, port, version: health?.version ?? null, installed: true, started: false })
     },
   }), `tmon: GET ${TMON_STATUS_PATH}`)
+
+  // The shell setting lives in tmon's own config file, and only the running
+  // tmon decides which shell it uses — so these routes relay to tmon rather
+  // than writing the file here. Restarting is separate and deliberate: a
+  // setting reaches the next task only after the server is replaced, and the
+  // panel asks what that would interrupt before it asks for one.
+  ctx.effect(() => ctx.webServer.register({
+    kind: 'exact',
+    path: TMON_CONFIG_PATH,
+    handler: async (req, res) => {
+      if (rejected(req, res)) return
+      const port = await readPort()
+      try {
+        if (req.method === 'GET') {
+          const config = await request(port, '/api/config')
+          sendJson(res, 200, config)
+          return
+        }
+        if (req.method === 'POST') {
+          const body = await readBody(req)
+          const parsed = body === '' ? {} : JSON.parse(body)
+          const result = await postJson(port, '/api/config', { shell: parsed.shell })
+          sendJson(res, 200, result)
+          return
+        }
+        res.statusCode = 405
+        res.setHeader('allow', 'GET, POST')
+        res.end()
+      } catch (error) {
+        sendJson(res, 500, { error: String(error?.message ?? error) })
+      }
+    },
+  }), `tmon: ${TMON_CONFIG_PATH}`)
+
+  ctx.effect(() => ctx.webServer.register({
+    kind: 'exact',
+    path: TMON_CHECK_PATH,
+    handler: async (req, res) => {
+      if (rejected(req, res)) return
+      if (req.method !== 'POST') {
+        res.statusCode = 405
+        res.setHeader('allow', 'POST')
+        res.end()
+        return
+      }
+      const port = await readPort()
+      try {
+        const parsed = JSON.parse(await readBody(req))
+        const result = await postJson(port, '/api/config/check', { shell: parsed.shell })
+        sendJson(res, 200, result)
+      } catch (error) {
+        sendJson(res, 500, { error: String(error?.message ?? error) })
+      }
+    },
+  }), `tmon: POST ${TMON_CHECK_PATH}`)
+
+  ctx.effect(() => ctx.webServer.register({
+    kind: 'exact',
+    path: TMON_RESTART_PATH,
+    handler: async (req, res) => {
+      if (rejected(req, res)) return
+      const port = await readPort()
+      // Asking never restarts: the panel first learns what would be interrupted
+      // and only then posts `confirm`. A restart kills every running task, and
+      // that must be a decision the user made, not a side effect of saving.
+      try {
+        const running = await runningTasks(port)
+        if (req.method === 'GET') {
+          sendJson(res, 200, { running })
+          return
+        }
+        if (req.method !== 'POST') {
+          res.statusCode = 405
+          res.setHeader('allow', 'GET, POST')
+          res.end()
+          return
+        }
+        const parsed = JSON.parse((await readBody(req)) || '{}')
+        if (parsed.confirm !== true) {
+          sendJson(res, 409, { running, error: 'restart needs confirm: true' })
+          return
+        }
+        const restarted = await restartServer(port)
+        sendJson(res, 200, { running, ...restarted })
+      } catch (error) {
+        sendJson(res, 500, { error: String(error?.message ?? error) })
+      }
+    },
+  }), `tmon: ${TMON_RESTART_PATH}`)
 
   // Compositions without a prompt registry or a skill registry still get the
   // panel; only these two contributions are optional, so the dependencies are
