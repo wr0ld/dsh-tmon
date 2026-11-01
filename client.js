@@ -22,6 +22,36 @@ window.__ModuleLoader__.load({
     /** Locale namespace holding this plugin's text. */
     const NS = 'tmon'
 
+    /**
+     * The session the panel should show, and the listeners waiting for it.
+     *
+     * `conversation.view` is session-scoped and receives a real `sessionId`;
+     * `main` is root-scoped and receives none — its only session-bound key is
+     * the reserved `conversation`. The panel lives in `main`, so the id has to
+     * cross that gap, and a module-level store with a subscription is the
+     * smallest thing that does it without changing either slot's contract.
+     */
+    const sessionBridge = {
+      current: null,
+      listeners: new Set(),
+      set(value) {
+        if (sessionBridge.current === value) return
+        sessionBridge.current = value
+        for (const listener of sessionBridge.listeners) listener(value)
+      },
+      subscribe(listener) {
+        sessionBridge.listeners.add(listener)
+        return () => { sessionBridge.listeners.delete(listener) }
+      },
+    }
+
+    /** Hook: the current session id from the bridge, updated on switch. */
+    function useBridgedSession() {
+      const [value, setValue] = React.useState(sessionBridge.current)
+      React.useEffect(() => sessionBridge.subscribe(setValue), [])
+      return value
+    }
+
     /** Host route reporting whether tmon answers, and on which port. */
     const STATUS_ROUTE = 'tmon/status'
 
@@ -466,8 +496,13 @@ window.__ModuleLoader__.load({
       const port = typeof snapshot.port === 'number' ? snapshot.port : null
       // tmon is one workbench per machine, so the page opens as a list of every
       // session's tasks unless told which session is asking. The slot supplies
-      // `sessionId` because `conversation.view` is a session-scoped slot.
-      const sessionId = typeof props.sessionId === 'string' && props.sessionId !== '' ? props.sessionId : null
+      // `sessionId` because `conversation.view` is a session-scoped slot. The
+      // panel is also mounted under the root-scoped `main` slot, which receives
+      // no session at all, so the bridged value is the one to prefer: it is
+      // whichever is non-empty, and it updates when the session switches.
+      const bridgedSession = useBridgedSession()
+      const directSession = typeof props.sessionId === 'string' && props.sessionId !== '' ? props.sessionId : null
+      const sessionId = directSession ?? bridgedSession
       const pageUrl = port === null
         ? null
         : `http://127.0.0.1:${String(port)}/${sessionId === null ? '' : `?session=${encodeURIComponent(sessionId)}`}`
@@ -532,7 +567,10 @@ window.__ModuleLoader__.load({
 
       return h('div', { style: styles.root }, header, restartNotice,
         h('iframe', {
-          key: `web-${String(frameKey)}`,
+          // The session id belongs in the key: switching session changes the
+          // URL but React would reuse the same iframe and only patch `src`,
+          // leaving the page showing the session it loaded with.
+          key: `web-${String(frameKey)}-${sessionId ?? 'all'}`,
           title: t('panelTitle'),
           src: pageUrl,
           style: styles.frame,
@@ -554,6 +592,24 @@ window.__ModuleLoader__.load({
           ...props,
           t: typeof props.t === 'function' ? props.t : t,
         })
+
+        /**
+         * The panel as the conversation tab sees it.
+         *
+         * This slot is session-scoped, so its props carry the real id; the
+         * `main` occupant receives none. Reporting it here is what keeps the
+         * embedded page on the session the user is actually looking at.
+         */
+        const ViewPanel = props => {
+          React.useEffect(() => {
+            const value = typeof props.sessionId === 'string' && props.sessionId !== '' ? props.sessionId : null
+            sessionBridge.set(value)
+          }, [props.sessionId])
+          return h(TmonPanel, {
+            ...props,
+            t: typeof props.t === 'function' ? props.t : t,
+          })
+        }
 
         /** The settings section, with the same translate fallback the panel uses. */
         const Settings = props => h(TmonSettings, {
@@ -577,7 +633,7 @@ window.__ModuleLoader__.load({
             order: 40,
             locale: NS,
             label: () => t('nav'),
-          }, Panel)),
+          }, ViewPanel)),
           'tmon: conversation view tab',
         )
 
