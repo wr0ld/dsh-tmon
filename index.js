@@ -26,7 +26,7 @@ import { spawn } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { access, readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 
 /** Plugin name for diagnostics. */
 export const name = 'tmon'
@@ -207,20 +207,22 @@ async function findCli() {
  * @throws when the server does not come up within `STARTUP_TIMEOUT_MS`.
  */
 /**
- * The command line that starts tmon's server.
+ * Where the tmon CLI's entry script is, given the executable that runs it.
  *
- * A `.cmd` shim is a batch file, so on Windows it only runs through cmd.exe, and
- * that is the one case where `shell` is unavoidable. The argument is a fixed
- * literal rather than anything derived from input, which is what keeps it safe.
+ * The npm shim sits beside the package it installs: `npm/tmon.cmd` next to
+ * `npm/node_modules/@qiu745/tmon/bin/tmon.js`. Launching that script with this
+ * process's own Node is what the CLI does to start its server, and it is the
+ * only way to do it without a shell: a `.cmd` shim is a batch file, so running
+ * it spawns cmd.exe, and `windowsHide` does not suppress a console that a
+ * shell was asked to create.
  * @param cli - the executable returned by `findCli`.
- * @returns what to spawn, and whether a shell is needed to spawn it.
+ * @returns the script path, or null when the layout is not npm's.
  */
-function serveCommand(cli) {
-  if (process.platform !== 'win32') return { command: cli, args: ['serve'], shell: false }
-  if (cli.endsWith('.cmd') || cli.endsWith('.bat')) {
-    return { command: `"${cli}" serve`, args: [], shell: true }
-  }
-  return { command: cli, args: ['serve'], shell: false }
+async function cliEntry(cli) {
+  const suffix = process.platform === 'win32' ? '.cmd' : ''
+  const prefix = cli.endsWith(suffix) ? cli.slice(0, -suffix.length) : cli
+  const entry = join(dirname(prefix), 'node_modules', '@qiu745', 'tmon', 'bin', 'tmon.js')
+  return await exists(entry) ? entry : null
 }
 
 /**
@@ -228,22 +230,27 @@ function serveCommand(cli) {
  *
  * The CLI keeps the service alive across invocations — that is how a task
  * outlives the command that started it — so this launches it exactly the way
- * the CLI's own `ensureServer` does: `tmon serve`, no stdio, unref'd, which
- * leaves nothing for the Host to reap.
+ * the CLI's own `ensureServer` does: this Node, the CLI script, `serve`, no
+ * stdio, unref'd, which leaves nothing for the Host to reap and no window to
+ * close.
  * @param cli - the executable returned by `findCli`.
  * @param port - the port to expect it on.
  * @returns the health body once it answers.
  * @throws when the server does not come up within `STARTUP_TIMEOUT_MS`.
  */
 async function startServer(cli, port) {
-  const { command, args, shell } = serveCommand(cli)
-  const child = spawn(command, args, {
-    detached: true,
-    stdio: 'ignore',
-    windowsHide: true,
-    shell,
-  })
-  child.unref()
+  const entry = await cliEntry(cli)
+  const child = entry === null
+    ? null
+    : spawn(process.execPath, [entry, 'serve'], {
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: true,
+    })
+  // Without the npm layout the shim is all there is, and running a batch file
+  // needs a shell; that fallback is worth a console window rather than nothing.
+  const shim = child ?? spawn(cli, ['serve'], { detached: true, stdio: 'ignore', windowsHide: true })
+  shim.unref()
 
   const deadline = Date.now() + STARTUP_TIMEOUT_MS
   while (Date.now() < deadline) {
