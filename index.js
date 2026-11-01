@@ -23,7 +23,7 @@
  */
 
 import { spawn } from 'node:child_process'
-import { readFileSync } from 'node:fs'
+import { accessSync, readFileSync } from 'node:fs'
 import { access, mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { constants } from 'node:fs'
 import { homedir } from 'node:os'
@@ -136,6 +136,53 @@ async function existsInPath(path) {
   } catch (_missingOrNotExecutable) {
     return false
   }
+}
+
+/**
+ * Environment for the tmon server this plugin starts.
+ *
+ * The server outlives the turn and runs every command in its own shell, so a
+ * configured `bash` must be findable from the server's `PATH` — the model
+ * shell's `PATH` is not inherited by a detached child. DSH ships its bash
+ * inside a profile's `node_modules`, which no system `PATH` carries, so that
+ * one directory is appended. Nothing outside this child is touched.
+ * @returns the environment to spawn with, `PATH` extended when bash is found.
+ */
+function serverEnv() {
+  const env = { ...process.env }
+  const separator = process.platform === 'win32' ? ';' : ':'
+  const shell = findExecutableSync('bash')
+  if (shell === null) return env
+  const shellDir = dirname(shell)
+  const current = env.PATH ?? env.Path ?? ''
+  if (current.split(separator).includes(shellDir)) return env
+  env.PATH = [shellDir, current].filter(part => part !== '').join(separator)
+  return env
+}
+
+/**
+ * Locate an executable on `PATH` without blocking on file I/O.
+ * @param name - command name without a directory.
+ * @returns the absolute path, or null when nothing on `PATH` holds it.
+ */
+function findExecutableSync(name) {
+  const separator = process.platform === 'win32' ? ';' : ':'
+  const extensions = process.platform === 'win32'
+    ? ['.EXE', '.CMD', '.BAT', '.COM', '']
+    : ['']
+  for (const directory of (process.env.PATH ?? '').split(separator)) {
+    if (directory === '') continue
+    for (const extension of extensions) {
+      const candidate = join(directory, `${name}${extension}`)
+      try {
+        accessSync(candidate, constants.X_OK)
+        return candidate
+      } catch (_absentOrNotExecutable) {
+        // Not here; keep looking.
+      }
+    }
+  }
+  return null
 }
 
 /**
@@ -612,7 +659,12 @@ async function startServer(port) {
     }
   }
 
-  const child = spawn(command, args, { detached: true, stdio: 'ignore', windowsHide: true })
+  const child = spawn(command, args, {
+    detached: true,
+    stdio: 'ignore',
+    windowsHide: true,
+    env: serverEnv(),
+  })
   child.unref()
 
   const deadline = Date.now() + STARTUP_TIMEOUT_MS
