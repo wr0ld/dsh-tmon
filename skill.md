@@ -25,6 +25,10 @@ tmon "rsync -a /data/ /backup/"
 
 **不要自己用 `sleep` 轮询盯命令。** 想看进度就用 `tmon_tasks`，想等结束就用 `tmon wait <id>`（退出码透传）；`sleep 20; 再看一眼` 这种写法既看不见中间过程，又浪费一轮往返，还可能把一次正常的长任务误判成卡死。
 
+**命令本身带延时，一律走 tmon，不估总时长。** `sleep`、`timeout`、`ping -n`/`-c` 当停顿用、退避重试循环、`Start-Sleep`、`timeout /t` —— 只要命令里有等待，就 `tmon "<命令>"`。裸跑这类命令会把整轮卡住，用户既看不到进度也没法取消，哪怕总时长只有几秒。
+
+**tmon 里跑的是配置的那个 shell，可能和当前会话的 shell 不同。** 默认是 Windows 的 `cmd.exe`、其它平台的 `/bin/sh`；用户可能在 tmon 设置里改成 `bash`、`pwsh` 或某个绝对路径。写命令前先想清楚它在哪个 shell 里展开：`cmd` 里没有 `$VAR`、没有 `&&` 之外的 Unix 习惯，`bash` 里才能用单引号嵌套与管道组合。拿不准就用脚本文件再 `tmon "bash /path/to/x.sh"`，让方言只出现在文件里。
+
 需要后台执行时用 shell 的后台化，tmon 会在 stderr 打印任务 id：
 
 ```
