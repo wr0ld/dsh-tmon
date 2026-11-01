@@ -40,7 +40,7 @@ window.__ModuleLoader__.load({
         loading: '正在读取 tmon…',
         starting: 'tmon 没有在运行，正在启动它…',
         unavailable: '没有安装 tmon',
-        unavailableHint: '这台机器上找不到 tmon 命令。先装它：npm install -g @qiu745/tmon（需要 Node 22.18+），装好之后这里会自动连上。',
+        unavailableHint: '插件自带的 tmon 没有找到，通常是安装不完整，重新安装插件即可。',
         failed: 'tmon 启动失败',
         failedHint: 'tmon 已经安装，但服务没有起来。在会话里跑一次 tmon "命令" 可以看它报了什错。',
         portHint: '端口读自 ~/.tmon/port（当前 {port}）',
@@ -55,8 +55,8 @@ window.__ModuleLoader__.load({
         reload: 'Reload',
         openPage: 'Open in browser',
         loading: 'Reading tmon…',
-        unavailable: 'tmon is not installed',
-        unavailableHint: 'The tmon command is not on this machine. Install it first: npm install -g @qiu745/tmon (needs Node 22.18+); this panel connects on its own once it is there.',
+        unavailable: 'the bundled tmon is missing',
+        unavailableHint: 'The copy of tmon this plugin ships is missing, which usually means an incomplete install; reinstalling the plugin fixes it.',
         failed: 'tmon failed to start',
         failedHint: 'tmon is installed but its service did not come up. Run tmon "command" once in a session to see what it reports.',
         portHint: 'Port comes from ~/.tmon/port (now {port})',
@@ -190,7 +190,13 @@ window.__ModuleLoader__.load({
       }, [tick])
 
       const port = typeof snapshot.port === 'number' ? snapshot.port : null
-      const pageUrl = port === null ? null : `http://127.0.0.1:${String(port)}/`
+      // tmon is one workbench per machine, so the page opens as a list of every
+      // session's tasks unless told which session is asking. The slot supplies
+      // `sessionId` because `conversation.view` is a session-scoped slot.
+      const sessionId = typeof props.sessionId === 'string' && props.sessionId !== '' ? props.sessionId : null
+      const pageUrl = port === null
+        ? null
+        : `http://127.0.0.1:${String(port)}/${sessionId === null ? '' : `?session=${encodeURIComponent(sessionId)}`}`
       const subtitle = snapshot.connected
         ? t('connectedOn', { port: port ?? '—' })
         : snapshot.starting ? t('starting') : t('disconnected')

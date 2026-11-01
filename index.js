@@ -27,6 +27,7 @@ import { readFileSync } from 'node:fs'
 import { access, mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 /** Plugin name for diagnostics. */
 export const name = 'tmon'
@@ -71,8 +72,8 @@ const PROMPT_TEXT = 'tmon records every command run through it, so the user can 
   + 'Wrapping changes neither the behaviour nor the exit code, so it costs nothing to be wrong in that direction. '
   + 'Pass the whole command as one string, and never nest tmon subcommands (ls, status, wait, show, kill, progress, stage) inside it. '
   + 'When a task looks hung, call `tmon_tasks`: it reports how long the task has been silent, which is what separates stuck from slow. '
-  + 'If the shell reports that `tmon` is not found, the user has not installed it yet: say so and give the one-line fix, '
-  + '`npm install -g @qiu745/tmon` (needs Node 22.18 or newer), then wait for them — do not retry the command and do not quietly fall back to running it unwrapped. '
+  + 'If the shell reports that `tmon` is not found, the plugin\'s usable copy is missing or broken: report that as a plugin problem rather than retrying, '
+  + 'and do not quietly fall back to running the command unwrapped. '
   + 'Read the `tmon` skill before running a long job in the background or reporting progress from inside a script.'
 
 
@@ -218,6 +219,29 @@ async function exists(path) {
 }
 
 /**
+ * The entry script of the tmon this plugin ships, if it is there.
+ *
+ * The plugin carries its own copy under `vendor/tmon` so that installing the
+ * plugin is the whole installation: no separate `npm install -g`, and no
+ * chance of running against a version whose task record lacks the session
+ * field the panel filters on. That copy is a patched tmon — the upstream one
+ * does not record which caller started a task.
+ * @returns the entry script path, or null when the copy is missing.
+ */
+function bundledEntry() {
+  const entry = fileURLToPath(new URL('./vendor/tmon/bin/tmon.js', import.meta.url))
+  return entry
+}
+
+/**
+ * Whether the plugin's own tmon copy is present.
+ * @returns true when the bundle can start its own server.
+ */
+async function hasBundledTmon() {
+  return await exists(bundledEntry())
+}
+
+/**
  * Where the `tmon` executable is, without running a shell to find out.
  *
  * `where`/`which` would answer this, but running one to decide whether to run
@@ -291,19 +315,39 @@ async function cliEntry(cli) {
  * @returns the health body once it answers.
  * @throws when the server does not come up within `STARTUP_TIMEOUT_MS`.
  */
-async function startServer(cli, port) {
-  const entry = await cliEntry(cli)
-  const child = entry === null
-    ? null
-    : spawn(process.execPath, [entry, 'serve'], {
-      detached: true,
-      stdio: 'ignore',
-      windowsHide: true,
-    })
-  // Without the npm layout the shim is all there is, and running a batch file
-  // needs a shell; that fallback is worth a console window rather than nothing.
-  const shim = child ?? spawn(cli, ['serve'], { detached: true, stdio: 'ignore', windowsHide: true })
-  shim.unref()
+/**
+ * Start tmon's server, detached, and wait until it answers.
+ *
+ * Three sources, in order of preference: the copy this plugin ships, the npm
+ * layout of a global install, and finally the shim itself. The first needs no
+ * shell and no console; the second needs no shell; only the last does, because
+ * a batch file cannot be executed any other way.
+ * @param port - the port to expect it on.
+ * @returns the health body once it answers.
+ * @throws when no tmon can be started, or it does not answer in time.
+ */
+async function startServer(port) {
+  const bundled = bundledEntry()
+  let command = null
+  let args = null
+  if (await exists(bundled)) {
+    command = process.execPath
+    args = [bundled, 'serve']
+  } else {
+    const cli = await findCli()
+    if (cli === null) throw new Error('tmon is not installed and the bundled copy is missing')
+    const entry = await cliEntry(cli)
+    if (entry !== null) {
+      command = process.execPath
+      args = [entry, 'serve']
+    } else {
+      command = cli
+      args = ['serve']
+    }
+  }
+
+  const child = spawn(command, args, { detached: true, stdio: 'ignore', windowsHide: true })
+  child.unref()
 
   const deadline = Date.now() + STARTUP_TIMEOUT_MS
   while (Date.now() < deadline) {
@@ -737,17 +781,17 @@ export function apply(ctx) {
         reason = String(error?.message ?? error)
       }
 
-      // A stopped server is the plugin's problem to solve, not the user's: the
-      // CLI is what owns the service, so start it and report only the case it
-      // cannot fix — the CLI is not installed at all.
+      // A stopped server is the plugin's problem to solve, not the user's. The
+      // bundled copy means "installed" is normally already true, so the only
+      // case left to report is a distribution that shipped without it.
       if (health === null) {
-        const cli = await findCli()
-        if (cli === null) {
+        const available = await hasBundledTmon() || await findCli() !== null
+        if (!available) {
           sendJson(res, 200, { reachable: false, port, version: null, installed: false, reason })
           return
         }
         try {
-          health = await startServer(cli, port)
+          health = await startServer(port)
           sendJson(res, 200, { reachable: true, port, version: health?.version ?? null, installed: true, started: true })
         } catch (error) {
           sendJson(res, 200, {
