@@ -41,6 +41,7 @@ window.__ModuleLoader__.load({
         connectedOn: 'tmon 运行于 127.0.0.1:{port}',
         disconnected: 'tmon 没有响应',
         reload: '重新加载',
+        restartButton: '重启服务',
         openPage: '在浏览器打开',
         loading: '正在读取 tmon…',
         starting: 'tmon 没有在运行，正在启动它…',
@@ -79,6 +80,7 @@ window.__ModuleLoader__.load({
         disconnected: 'tmon is not responding',
         starting: 'tmon is not running; starting it…',
         reload: 'Reload',
+        restartButton: 'Restart',
         openPage: 'Open in browser',
         loading: 'Reading tmon…',
         unavailable: 'the bundled tmon is missing',
@@ -392,6 +394,37 @@ window.__ModuleLoader__.load({
       })
       const [tick, setTick] = React.useState(0)
       const [frameKey, setFrameKey] = React.useState(0)
+      const [restarting, setRestarting] = React.useState(false)
+      const [restartNote, setRestartNote] = React.useState(null)
+
+      /**
+       * Restart the tmon service from the panel.
+       *
+       * A running task would be killed by this, so the count comes first and a
+       * confirmation stands between the click and the restart. The page is
+       * reloaded afterwards because the port and the server it talks to change.
+       */
+      const restartHere = async () => {
+        try {
+          const state = await (await fetch(RESTART_ROUTE, { headers: { accept: 'application/json' } })).json()
+          const running = Array.isArray(state?.running) ? state.running.length : 0
+          if (running > 0 && !window.confirm(t('restartConfirm', { count: String(running) }))) return
+          setRestarting(true)
+          setRestartNote(null)
+          await (await fetch(RESTART_ROUTE, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ confirm: true }),
+          })).json()
+          setRestartNote({ kind: 'good', text: t('restartDone') })
+          setFrameKey(value => value + 1)
+          setTick(value => value + 1)
+        } catch (error) {
+          setRestartNote({ kind: 'bad', text: t('restartFailed', { reason: String(error?.message ?? error) }) })
+        } finally {
+          setRestarting(false)
+        }
+      }
 
       React.useEffect(() => {
         let cancelled = false
@@ -454,11 +487,24 @@ window.__ModuleLoader__.load({
               setTick(value => value + 1)
             },
           }, t('reload')),
+          h('button', {
+            type: 'button',
+            style: styles.button,
+            disabled: restarting,
+            onClick: restartHere,
+          }, restarting ? t('restarting') : t('restartButton')),
           pageUrl === null
             ? null
             : h('a', { style: styles.link, href: pageUrl, target: '_blank', rel: 'noreferrer' }, t('openPage')),
         ),
       )
+
+      // A failed restart is the one outcome the panel must not swallow: the
+      // buttons return to their normal state either way, so without this line
+      // a click that changed nothing would look identical to one that worked.
+      const restartNotice = restartNote === null
+        ? null
+        : h('div', { style: restartNote.kind === 'good' ? styles.hintGood : styles.hintBad }, restartNote.text)
 
       if (snapshot.loading) {
         return h('div', { style: styles.root }, header,
@@ -482,7 +528,7 @@ window.__ModuleLoader__.load({
           ))
       }
 
-      return h('div', { style: styles.root }, header,
+      return h('div', { style: styles.root }, header, restartNotice,
         h('iframe', {
           key: `web-${String(frameKey)}`,
           title: t('panelTitle'),
