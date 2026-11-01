@@ -24,7 +24,7 @@
 
 import { spawn } from 'node:child_process'
 import { readFileSync } from 'node:fs'
-import { access, readFile } from 'node:fs/promises'
+import { access, mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 
@@ -112,6 +112,59 @@ const REQUEST_TIMEOUT_MS = 1500
 function tmonHome() {
   const configured = process.env.TMON_HOME
   return configured !== undefined && configured !== '' ? configured : join(homedir(), '.tmon')
+}
+
+/**
+ * @returns this plugin's own state directory, beside tmon's rather than inside
+ * it: tmon rewrites `meta.json` on every status change, so nothing may live in
+ * the task directories, but the home they share is a natural neighbour.
+ */
+function stateHome() {
+  return join(tmonHome(), 'dsh-tmon')
+}
+
+/**
+ * The file mapping a task id to the session that started it.
+ *
+ * tmon records `{ cmd, cwd, pid, mode }` and knows nothing about sessions, so
+ * without this a `tmon_tasks` call reports every task on the machine — the
+ * other conversations' work included. The map is written by the shell the
+ * model runs through tmon, which is the only place both ids are known.
+ * @returns the absolute path of the map.
+ */
+function sessionMapPath() {
+  return join(stateHome(), 'sessions.json')
+}
+
+/**
+ * Read the task-to-session map.
+ * @returns the map, or an empty object when it has not been written yet.
+ */
+async function readSessionMap() {
+  try {
+    const raw = await readFile(sessionMapPath(), 'utf8')
+    const parsed = JSON.parse(raw)
+    return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
+  } catch (_absentOrUnreadable) {
+    // No map yet, or a half-written one: every task reads as belonging to no
+    // session, which is the honest answer rather than a guess.
+    return {}
+  }
+}
+
+/**
+ * Record which session started a task.
+ * @param taskId - the task's eight-hex-digit id.
+ * @param sessionId - the session that ran the command.
+ */
+async function rememberTask(taskId, sessionId) {
+  const map = await readSessionMap()
+  map[taskId] = { session: sessionId, at: Date.now() }
+  await mkdir(stateHome(), { recursive: true })
+  const target = sessionMapPath()
+  const temporary = `${target}.${String(process.pid)}.tmp`
+  await writeFile(temporary, JSON.stringify(map, null, 2), { mode: 0o600 })
+  await rename(temporary, target)
 }
 
 /**
@@ -720,6 +773,26 @@ export function apply(ctx) {
     promptCtx.systemPrompt.section({ name: PROMPT_SECTION, order: PROMPT_ORDER, text: PROMPT_TEXT })
   })
 
+  // tmon prints `tmon: task <id> started: <cmd>` on stderr for every task it
+  // runs, and the shell that ran it carried `DSH_SESSION_ID`. Reading the pair
+  // off a finished tool result is how a task acquires an owner: nothing else on
+  // the way knows both ids at once.
+  ctx.on('tools/result', (exec, result) => {
+    const sessionId = exec?.agent?.session?.header?.id
+    if (sessionId === undefined) return
+    const text = JSON.stringify(result ?? '')
+    const found = new Set()
+    for (const match of text.matchAll(/(?:^|[^0-9a-z])tmon: task ([0-9a-f]{8}) started/gu)) {
+      found.add(match[1])
+    }
+    for (const taskId of found) {
+      void rememberTask(taskId, sessionId).catch(_unwritten => {
+        // Ownership is an optimisation for the next `tmon_tasks` call: losing a
+        // record makes a task read as another session's, never as a wrong owner.
+      })
+    }
+  })
+
   ctx.inject(['skills'], skillsCtx => {
     const guide = parseSkill(readFileSync(new URL('./skill.md', import.meta.url), 'utf8'))
     const skill = { ...guide, source: 'bundled' }
@@ -815,6 +888,7 @@ export function apply(ctx) {
               required: ['running', 'success', 'failed', 'killed', 'error'],
               additionalProperties: false,
             },
+            otherSessions: { type: 'number' },
           },
           required: ['reachable', 'tasks'],
           additionalProperties: false,
@@ -824,8 +898,19 @@ export function apply(ctx) {
           text: renderReport(args, value),
         }],
       },
-      execute: async args => {
+      execute: async (args, execution) => {
         const port = await readPort()
+        // tmon is one workbench per machine, so its task list is everything
+        // every conversation ever ran. A model that sees another session's work
+        // will answer about it, so the list is narrowed to this session and the
+        // count of what was left out is reported rather than silently dropped.
+        const sessionId = execution?.agent?.session?.header?.id
+        const mine = async tasks => {
+          if (sessionId === undefined) return { kept: tasks, others: 0 }
+          const map = await readSessionMap()
+          const kept = tasks.filter(task => map[String(task?.id)]?.session === sessionId)
+          return { kept, others: tasks.length - kept.length }
+        }
         const clamp = (raw, fallback, max) => {
           const n = typeof raw === 'number' && Number.isFinite(raw) ? Math.trunc(raw) : fallback
           return Math.min(Math.max(n, 0), max)
@@ -838,6 +923,15 @@ export function apply(ctx) {
             }
             const body = await request(port, `/api/tasks/${wanted}`)
             if (!body?.task) return { reachable: true, port, tasks: [], reason: 'no such task' }
+            const ownership = await mine([body.task])
+            if (ownership.kept.length === 0) {
+              return {
+                reachable: true,
+                port,
+                tasks: [],
+                reason: `task ${wanted} belongs to another session, so it is not reported here`,
+              }
+            }
             const facts = await summarise(port, body.task)
             const perPage = Math.min(clamp(args?.tail, 20, 200), MAX_OUTPUT_LINES)
             const events = await readEvents(port, wanted)
@@ -872,6 +966,8 @@ export function apply(ctx) {
           }
           const body = await request(port, '/api/tasks')
           const all = Array.isArray(body?.tasks) ? body.tasks : []
+          const ownership = await mine(all)
+          const own = ownership.kept
           const wantedStatus = typeof args?.status === 'string' ? args.status.trim() : ''
           if (wantedStatus !== '' && !TASK_STATUSES.includes(wantedStatus)) {
             return {
@@ -881,13 +977,14 @@ export function apply(ctx) {
               reason: `status must be one of ${TASK_STATUSES.join(', ')}`,
             }
           }
-          // Counted over every recorded task, not over the page being returned:
-          // the counts are what tells a reader the list is longer than it looks.
+          // Counted over every task of this session, not over the page being
+          // returned: the counts are what tells a reader the list is longer than
+          // it looks.
           const counts = { running: 0, success: 0, failed: 0, killed: 0, error: 0 }
-          for (const task of all) {
+          for (const task of own) {
             if (TASK_STATUSES.includes(task?.status)) counts[task.status] += 1
           }
-          const matching = wantedStatus === '' ? all : all.filter(task => task?.status === wantedStatus)
+          const matching = wantedStatus === '' ? own : own.filter(task => task?.status === wantedStatus)
           const limit = clamp(args?.limit, 10, 50)
           const slice = matching.slice(0, Math.max(limit, 1))
           const facts = await Promise.all(slice.map(task => summarise(port, task)))
@@ -896,8 +993,9 @@ export function apply(ctx) {
             port,
             tasks: facts,
             counts,
-            total: all.length,
+            total: own.length,
             matched: matching.length,
+            otherSessions: ownership.others,
           }
         } catch (error) {
           return {
