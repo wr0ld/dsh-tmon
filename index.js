@@ -51,6 +51,21 @@ export const TMON_RESTART_PATH = '/tmon/restart'
 /** tmon task ids are eight lowercase hex digits. */
 const TASK_ID = /^[0-9a-f]{8}$/
 
+/**
+ * Model-shell variable pointing at the bundled CLI.
+ *
+ * `ctx.shellEnv` only accepts `DSH_`-prefixed keys, and a fixed absolute path
+ * would be wrong on every other machine, so the value is resolved at execution
+ * time from this module's own location.
+ */
+const TMON_CLI_KEY = 'DSH_TMON_CLI'
+
+/** How many times to look for a task's meta before giving up on stamping it. */
+const STAMP_ATTEMPTS = 20
+
+/** Wait between those looks: the server writes the meta shortly after start. */
+const STAMP_INTERVAL_MS = 500
+
 /** Name of the skill this package ships, and the guide that defines it. */
 const SKILL_NAME = 'tmon'
 
@@ -156,7 +171,8 @@ async function promptText() {
 }
 
 const PROMPT_TEXT = 'tmon records every command run through it, so the user can watch and cancel from the 「命令终端」tab in the conversation View row. '
-  + 'Run a command through it as `tmon "<command>"` whenever it could plausibly take more than about ten seconds, produce an unbounded amount of output, '
+  + 'It is bundled with this plugin and is NOT on PATH: always call it as `"$DSH_TMON_CLI" "<command>"`, never as bare `tmon`. '
+  + 'Run a command through it whenever it could plausibly take more than about ten seconds, produce an unbounded amount of output, '
   + 'or wait on something outside this machine: package installs, builds, test suites, migrations, downloads, `git push`/`fetch`/`clone`, CI runs, network calls. '
   + 'Do not estimate the duration first and conclude that it looks fast — that estimate is the thing that is usually wrong. '
   + 'Never sit in a `sleep`-and-poll loop to watch your own command, and never re-run a command to find out whether the first one finished: that is what tmon and `tmon_tasks` are for. '
@@ -268,7 +284,7 @@ async function rememberTask(taskId, sessionId) {
   const temporary = `${target}.${String(process.pid)}.tmp`
   await writeFile(temporary, JSON.stringify(map, null, 2), { mode: 0o600 })
   await rename(temporary, target)
-  await stampTaskSession(taskId, sessionId)
+  await stampWithRetry(taskId, sessionId)
 }
 
 /**
@@ -276,26 +292,46 @@ async function rememberTask(taskId, sessionId) {
  *
  * This is the copy the panel reads. A task tmon never recorded a session for
  * (one started outside DSH) stays unowned: the field is added, not invented.
+ *
+ * The meta is written by the tmon server, not by the command, so a short task
+ * can finish — and report its id — before the file exists. One read is
+ * therefore not evidence that the task has no meta; the caller retries.
  * @param taskId - the task's eight-hex-digit id.
  * @param sessionId - the session that ran the command.
+ * @returns whether the meta was found and carries the session.
  */
 async function stampTaskSession(taskId, sessionId) {
-  if (!TASK_ID.test(taskId)) return
+  if (!TASK_ID.test(taskId)) return false
   const file = join(tmonHome(), 'tasks', taskId, 'meta.json')
   let meta
   try {
     meta = JSON.parse(await readFile(file, 'utf8'))
   } catch (_absentOrUnreadable) {
-    // tmon has not flushed the meta yet, or the task is gone: the map above is
-    // still the record `tmon_tasks` uses, so nothing is lost by skipping this.
-    return
+    // Not flushed yet: report the miss so the caller can try again.
+    return false
   }
-  if (meta === null || typeof meta !== 'object') return
-  if (meta.session === sessionId) return
+  if (meta === null || typeof meta !== 'object') return false
+  if (meta.session === sessionId) return true
   meta.session = sessionId
   const temporary = `${file}.${String(process.pid)}.tmp`
   await writeFile(temporary, JSON.stringify(meta, null, 2), { mode: 0o600 })
   await rename(temporary, file)
+  return true
+}
+
+/**
+ * Keep trying to stamp the session until the meta appears or the budget runs out.
+ *
+ * The map above is written first and is what `tmon_tasks` reads, so a failure
+ * here costs the panel its filter, never the record.
+ * @param taskId - the task's eight-hex-digit id.
+ * @param sessionId - the session that ran the command.
+ */
+async function stampWithRetry(taskId, sessionId) {
+  for (let attempt = 0; attempt < STAMP_ATTEMPTS; attempt += 1) {
+    if (await stampTaskSession(taskId, sessionId)) return
+    await new Promise(resolve => { setTimeout(resolve, STAMP_INTERVAL_MS) })
+  }
 }
 
 /**
@@ -993,6 +1029,19 @@ export function apply(ctx) {
     res.end()
   }
 
+  // The bundled tmon is not on PATH — installing one there would mean writing
+  // into the user's global npm prefix — so the model reaches it through this
+  // variable instead. The path is resolved per machine, never baked in.
+  if (ctx.shellEnv !== undefined && hasBundledTmon()) {
+    ctx.effect(() => ctx.shellEnv.register({
+      name: 'dsh-tmon',
+      variables: {
+        [TMON_CLI_KEY]: { description: 'Absolute path to the tmon CLI bundled with this plugin.' },
+      },
+      resolve: () => ({ [TMON_CLI_KEY]: bundledEntry() }),
+    }), 'tmon: model shell variable')
+  }
+
   ctx.effect(() => ctx.webServer.register({
     kind: 'exact',
     path: TMON_STATUS_PATH,
@@ -1376,7 +1425,7 @@ export function apply(ctx) {
             reachable: false,
             port,
             tasks: [],
-            reason: `${String(error?.message ?? error)} (is tmon running? start one task with \`tmon "<command>"\`)`,
+            reason: `${String(error?.message ?? error)} (is tmon running? start one task with \`"$DSH_TMON_CLI" "<command>"\`)`,
           }
         }
       },
