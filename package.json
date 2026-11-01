@@ -1,6 +1,6 @@
 {
   "name": "dsh-tmon",
-  "version": "0.1.6",
+  "version": "0.2.0",
   "description": "Brings tmon's long-command workbench into the Harness: a 「命令终端」conversation tab embeds tmon's own web page, and a `tmon_tasks` tool reports each task's status, silence, elapsed time and last progress so the model can tell a stuck command from a slow one. Requires `npm install -g @qiu745/tmon`.",
   "type": "module",
   "license": "MIT",
