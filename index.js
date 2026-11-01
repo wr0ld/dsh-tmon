@@ -139,24 +139,58 @@ async function existsInPath(path) {
 }
 
 /**
+ * Directories that hold a native `bash`, in the order a server should prefer them.
+ *
+ * `C:/Windows/System32/bash.exe` is WSL: it treats every path as a Linux one
+ * and is unusable for the Windows paths these tasks are written with. Git for
+ * Windows, then the copy DSH ships, are native builds that keep `E:/...` intact.
+ * @returns candidate `bash` paths, most preferred first.
+ */
+function nativeBashCandidates() {
+  if (process.platform !== 'win32') return ['/bin/bash', '/usr/bin/bash']
+  const candidates = []
+  for (const root of ['C:/Program Files/Git', 'C:/Program Files (x86)/Git', 'E:/Git', 'D:/Git']) {
+    candidates.push(`${root}/bin/bash.exe`, `${root}/usr/bin/bash.exe`)
+  }
+  const dshBash = join(dirname(fileURLToPath(import.meta.url)), 'vendor', 'bash')
+  candidates.push(dshBash)
+  return candidates
+}
+
+/**
+ * The first native `bash` that exists, or null when none does.
+ * @returns an absolute path, or null.
+ */
+function nativeBash() {
+  for (const candidate of nativeBashCandidates()) {
+    try {
+      accessSync(candidate, constants.X_OK)
+      return candidate
+    } catch (_absent) {
+      // Try the next candidate.
+    }
+  }
+  return null
+}
+
+/**
  * Environment for the tmon server this plugin starts.
  *
- * The server outlives the turn and runs every command in its own shell, so a
- * configured `bash` must be findable from the server's `PATH` — the model
- * shell's `PATH` is not inherited by a detached child. DSH ships its bash
- * inside a profile's `node_modules`, which no system `PATH` carries, so that
- * one directory is appended. Nothing outside this child is touched.
- * @returns the environment to spawn with, `PATH` extended when bash is found.
+ * The server outlives the turn and runs every command in its own shell, so the
+ * shell it resolved cannot depend on the model shell's `PATH`. Two things are
+ * fixed here: WSL's `bash.exe` is pushed behind a native build, and the profile
+ * copy of bash is made reachable. Nothing outside this child changes.
+ * @returns the environment to spawn with.
  */
 function serverEnv() {
   const env = { ...process.env }
   const separator = process.platform === 'win32' ? ';' : ':'
-  const shell = findExecutableSync('bash')
-  if (shell === null) return env
-  const shellDir = dirname(shell)
+  const bash = nativeBash()
+  if (bash === null) return env
+  const bashDir = dirname(bash)
   const current = env.PATH ?? env.Path ?? ''
-  if (current.split(separator).includes(shellDir)) return env
-  env.PATH = [shellDir, current].filter(part => part !== '').join(separator)
+  const parts = current.split(separator).filter(part => part !== '')
+  env.PATH = [bashDir, ...parts].join(separator)
   return env
 }
 
