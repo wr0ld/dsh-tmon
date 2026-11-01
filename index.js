@@ -39,26 +39,11 @@ export const inject = ['webServer', 'connection']
 /** Route answering whether the tmon service responds, and on which port. */
 export const TMON_STATUS_PATH = '/tmon/status'
 
-/** Route reading and writing the shell tmon runs commands in. */
-export const TMON_CONFIG_PATH = '/tmon/config'
-
-/** Route that reports whether a shell value typed into settings can run at all. */
-export const TMON_CHECK_PATH = '/tmon/config/check'
-
 /** Route listing the tasks a restart would interrupt. */
 export const TMON_RESTART_PATH = '/tmon/restart'
 
 /** tmon task ids are eight lowercase hex digits. */
 const TASK_ID = /^[0-9a-f]{8}$/
-
-/**
- * Model-shell variable pointing at the bundled CLI.
- *
- * `ctx.shellEnv` only accepts `DSH_`-prefixed keys, and a fixed absolute path
- * would be wrong on every other machine, so the value is resolved at execution
- * time from this module's own location.
- */
-const TMON_CLI_KEY = 'DSH_TMON_CLI'
 
 /** How many times to look for a task's meta before giving up on stamping it. */
 const STAMP_ATTEMPTS = 20
@@ -90,41 +75,6 @@ const PROMPT_ORDER = 1650
  * deciding for itself that a command looks fast and skipping the wrapper.
  */
 /**
- * Which shell tmon will run the next command in, for the prompt.
- *
- * The prompt has to name the shell the commands will actually meet: the agent
- * writes in whatever dialect it is told it is in, so "some configured shell" is
- * not enough — it needs `cmd` or `bash` or `pwsh` by name. Reading the config is
- * the only honest source; when it cannot be read the answer says so rather than
- * guessing at the platform default.
- * @returns a short phrase for the prompt, e.g. `bash`.
- */
-async function configuredShellName() {
-  let configured = ''
-  try {
-    const raw = await readFile(join(tmonHome(), 'config.json'), 'utf8')
-    const parsed = JSON.parse(raw)
-    if (parsed !== null && typeof parsed === 'object' && typeof parsed.shell === 'string') {
-      configured = parsed.shell.trim()
-    }
-  } catch (_absentOrUnreadable) {
-    // No config yet: tmon uses its platform default, named below.
-  }
-
-  const fallback = process.platform === 'win32' ? 'cmd.exe' : '/bin/sh'
-  if (configured === '') return { actual: fallback }
-  // A configured path may point at something that is not there any more; tmon
-  // falls back in that case, and the prompt must not claim otherwise.
-  const base = configured.replace(/\\/gu, '/').split('/').pop() ?? configured
-  const runnable = configured.includes('/') || configured.includes('\\')
-    ? await existsInPath(configured)
-    : await findExecutable(configured)
-  return runnable
-    ? { actual: base }
-    : { actual: fallback, rejected: base }
-}
-
-/**
  * Whether a path is executable.
  * @param path - absolute path to test.
  * @returns true when the file exists and can be executed.
@@ -136,150 +86,6 @@ async function existsInPath(path) {
   } catch (_missingOrNotExecutable) {
     return false
   }
-}
-
-/**
- * Directories that hold a native `bash`, in the order a server should prefer them.
- *
- * `C:/Windows/System32/bash.exe` is WSL: it treats every path as a Linux one
- * and is unusable for the Windows paths these tasks are written with. Git for
- * Windows, then the copy DSH ships, are native builds that keep `E:/...` intact.
- * @returns candidate `bash` paths, most preferred first.
- */
-function nativeBashCandidates() {
-  if (process.platform !== 'win32') return ['/bin/bash', '/usr/bin/bash']
-  const candidates = []
-  for (const root of ['C:/Program Files/Git', 'C:/Program Files (x86)/Git', 'E:/Git', 'D:/Git']) {
-    candidates.push(`${root}/bin/bash.exe`, `${root}/usr/bin/bash.exe`)
-  }
-  const dshBash = join(dirname(fileURLToPath(import.meta.url)), 'vendor', 'bash')
-  candidates.push(dshBash)
-  return candidates
-}
-
-/**
- * The first native `bash` that exists, or null when none does.
- * @returns an absolute path, or null.
- */
-function nativeBash() {
-  for (const candidate of nativeBashCandidates()) {
-    try {
-      accessSync(candidate, constants.X_OK)
-      return candidate
-    } catch (_absent) {
-      // Try the next candidate.
-    }
-  }
-  return null
-}
-
-/**
- * Whether a shell value names an exact file this machine can run.
- * @param value - a configured shell, bare name or absolute path.
- * @returns true when the value is an absolute path that exists.
- */
-function isAbsoluteShell(value) {
-  const backslash = String.fromCharCode(92)
-  return value.includes('/') || value.includes(backslash)
-    ? nativeBashAt(value) !== null
-    : false
-}
-
-/**
- * The file at a given bash path, or null when it is not there.
- * @param path - absolute candidate path.
- * @returns the path when executable, otherwise null.
- */
-function nativeBashAt(path) {
-  try {
-    accessSync(path, constants.X_OK)
-    return path
-  } catch (_absent) {
-    return null
-  }
-}
-
-/**
- * Point tmon's own config at a native `bash` when it holds only a bare name.
- *
- * tmon resolves a bare shell name against `PATH` without appending `.exe`, so
- * `"shell": "bash"` never matches on Windows and every task fails with
- * `File not found:`. Writing the absolute path once, at start, keeps the user's
- * choice (they asked for bash) and fixes the resolution. A value that is
- * already a path, or a different shell such as `pwsh`, is left untouched.
- * @returns the shell now configured, for the log line.
- */
-async function pinShellToAbsolutePath() {
-  const configPath = join(tmonHome(), 'config.json')
-  let config = {}
-  try {
-    const raw = await readFile(configPath, 'utf8')
-    const parsed = JSON.parse(raw)
-    if (parsed !== null && typeof parsed === 'object') config = parsed
-  } catch (_absentOrUnreadable) {
-    // No config yet: tmon would use its platform default, nothing to pin.
-    return null
-  }
-  const configured = typeof config.shell === 'string' ? config.shell.trim() : ''
-  if (configured === '') return null
-  if (isAbsoluteShell(configured)) return configured
-  const bare = configured.replace(/\.exe$/iu, '')
-  if (bare !== 'bash' && bare !== 'sh') return null
-  const bash = nativeBash()
-  if (bash === null) return null
-  const updated = { ...config, shell: bash }
-  const temporary = `${configPath}.${String(process.pid)}.tmp`
-  await mkdir(dirname(configPath), { recursive: true })
-  await writeFile(temporary, JSON.stringify(updated, null, 2), { mode: 0o600 })
-  await rename(temporary, configPath)
-  return bash
-}
-
-/**
- * Environment for the tmon server this plugin starts.
- *
- * The server outlives the turn and runs every command in its own shell, so the
- * shell it resolves cannot depend on the model shell's `PATH`. The native bash
- * is put first so a bare name would resolve even where WSL shadows it; the
- * absolute path written by {@link pinShellToAbsolutePath} is what actually
- * decides. Nothing outside this child changes.
- * @returns the environment to spawn with.
- */
-function serverEnv() {
-  const env = { ...process.env }
-  const separator = process.platform === 'win32' ? ';' : ':'
-  const bash = nativeBash()
-  if (bash === null) return env
-  const bashDir = dirname(bash)
-  const current = env.PATH ?? env.Path ?? ''
-  const parts = current.split(separator).filter(part => part !== '')
-  env.PATH = [bashDir, ...parts].join(separator)
-  return env
-}
-
-/**
- * Locate an executable on `PATH` without blocking on file I/O.
- * @param name - command name without a directory.
- * @returns the absolute path, or null when nothing on `PATH` holds it.
- */
-function findExecutableSync(name) {
-  const separator = process.platform === 'win32' ? ';' : ':'
-  const extensions = process.platform === 'win32'
-    ? ['.EXE', '.CMD', '.BAT', '.COM', '']
-    : ['']
-  for (const directory of (process.env.PATH ?? '').split(separator)) {
-    if (directory === '') continue
-    for (const extension of extensions) {
-      const candidate = join(directory, `${name}${extension}`)
-      try {
-        accessSync(candidate, constants.X_OK)
-        return candidate
-      } catch (_absentOrNotExecutable) {
-        // Not here; keep looking.
-      }
-    }
-  }
-  return null
 }
 
 /**
@@ -302,20 +108,15 @@ async function findExecutable(name) {
   return false
 }
 
-/** The prompt text, with the configured shell named each time it is assembled. */
-async function promptText() {
-  const { actual, rejected } = await configuredShellName()
-  // Two whole sentences rather than one template with an aside spliced in: a
-  // rejected setting has to say what was rejected, and a fragment reads as a
-  // typo once the "because" lands mid-clause.
-  const sentence = rejected === undefined
-    ? `The commands inside tmon run under ${actual}, which may differ from the shell this session otherwise uses; write them in that dialect.`
-    : `The commands inside tmon run under ${actual}: ${rejected} is configured but cannot be executed, so tmon falls back to it.`
+/** The prompt text, naming the shell tmon will actually use. */
+function promptText() {
+  const actual = process.platform === 'win32' ? 'cmd.exe' : '/bin/sh'
+  const sentence = `The commands inside tmon run under ${actual}, which may differ from the shell this session otherwise uses; write them in that dialect.`
   return PROMPT_TEXT.replace('{{shellSentence}}', sentence)
 }
 
 const PROMPT_TEXT = 'tmon records every command run through it, so the user can watch and cancel from the 「命令终端」tab in the conversation View row. '
-  + 'It is bundled with this plugin and is NOT on PATH: always call it as `"$DSH_TMON_CLI" "<command>"`, never as bare `tmon`. '
+  + 'Call it as `tmon "<command>"`. '
   + 'Run a command through it whenever it could plausibly take more than about ten seconds, produce an unbounded amount of output, '
   + 'or wait on something outside this machine: package installs, builds, test suites, migrations, downloads, `git push`/`fetch`/`clone`, CI runs, network calls. '
   + 'Do not estimate the duration first and conclude that it looks fast — that estimate is the thing that is usually wrong. '
@@ -329,8 +130,8 @@ const PROMPT_TEXT = 'tmon records every command run through it, so the user can 
   + 'and a shell timeout kills it outright, turning a slow command into an error you cannot watch or cancel. '
   + 'Pass the whole command as one string, and never nest tmon subcommands (ls, status, wait, show, kill, progress, stage) inside it. '
   + 'When a task looks hung, call `tmon_tasks`: it reports how long the task has been silent, which is what separates stuck from slow. '
-  + 'If the shell reports that `tmon` is not found, the plugin\'s usable copy is missing or broken: report that as a plugin problem rather than retrying, '
-  + 'and do not quietly fall back to running the command unwrapped. '
+  + 'If the shell reports that `tmon` is not found, the user has not installed it: say so and give the one-line fix, '
+  + '`npm install -g @qiu745/tmon` (needs Node 22.18 or newer), then wait for them -- do not retry and do not quietly run the command unwrapped. '
   + 'Read the `tmon` skill before running a long job in the background or reporting progress from inside a script.'
 
 
@@ -484,8 +285,6 @@ async function restartServer(port) {
  * @returns the script path, or null when neither exists.
  */
 async function tmonCliPath() {
-  const bundled = bundledEntry()
-  if (await exists(bundled)) return bundled
   const cli = await findCli()
   return cli === null ? null : await cliEntry(cli)
 }
@@ -529,29 +328,6 @@ async function exists(path) {
     // Absence is the answer, not a failure: it means "the CLI is not here".
     return false
   }
-}
-
-/**
- * The entry script of the tmon this plugin ships, if it is there.
- *
- * The plugin carries its own copy under `vendor/tmon` so that installing the
- * plugin is the whole installation: no separate `npm install -g`, and no
- * chance of running against a version whose task record lacks the session
- * field the panel filters on. That copy is a patched tmon — the upstream one
- * does not record which caller started a task.
- * @returns the entry script path, or null when the copy is missing.
- */
-function bundledEntry() {
-  const entry = fileURLToPath(new URL('./vendor/tmon/bin/tmon.js', import.meta.url))
-  return entry
-}
-
-/**
- * Whether the plugin's own tmon copy is present.
- * @returns true when the bundle can start its own server.
- */
-async function hasBundledTmon() {
-  return await exists(bundledEntry())
 }
 
 /**
@@ -640,38 +416,23 @@ async function cliEntry(cli) {
  * @throws when no tmon can be started, or it does not answer in time.
  */
 async function startServer(port) {
-  // A bare `bash` never resolves on Windows (tmon looks for the name without
-  // `.exe`), so the user's choice is pinned to a real file before spawning.
-  try {
-    await pinShellToAbsolutePath()
-  } catch (_unwritableConfig) {
-    // A read-only home is not a reason to refuse to start: tmon then falls
-    // back to its platform default, which the status route reports.
-  }
-  const bundled = bundledEntry()
+  const cli = await findCli()
+  if (cli === null) throw new Error('tmon is not installed')
+  const entry = await cliEntry(cli)
   let command = null
   let args = null
-  if (await exists(bundled)) {
+  if (entry !== null) {
     command = process.execPath
-    args = [bundled, 'serve']
+    args = [entry, 'serve']
   } else {
-    const cli = await findCli()
-    if (cli === null) throw new Error('tmon is not installed and the bundled copy is missing')
-    const entry = await cliEntry(cli)
-    if (entry !== null) {
-      command = process.execPath
-      args = [entry, 'serve']
-    } else {
-      command = cli
-      args = ['serve']
-    }
+    command = cli
+    args = ['serve']
   }
 
   const child = spawn(command, args, {
     detached: true,
     stdio: 'ignore',
     windowsHide: true,
-    env: serverEnv(),
   })
   child.unref()
 
@@ -1089,24 +850,6 @@ export function apply(ctx) {
     res.end()
   }
 
-  // The bundled tmon is not on PATH — installing one there would mean writing
-  // into the user's global npm prefix — so the model reaches it through this
-  // variable instead. The path is resolved per machine, never baked in.
-  // `inject` waits for the service: this plugin's fiber may be mounted before
-  // `shellEnv` exists, and a plain `ctx.shellEnv` read would then be undefined,
-  // silently skipping the contribution.
-  if (hasBundledTmon()) {
-    ctx.inject(['shellEnv'], envCtx => {
-      envCtx.effect(() => envCtx.shellEnv.register({
-        name: 'dsh-tmon',
-        variables: {
-          [TMON_CLI_KEY]: { description: 'Absolute path to the tmon CLI bundled with this plugin.' },
-        },
-        resolve: () => ({ [TMON_CLI_KEY]: bundledEntry() }),
-      }), 'tmon: model shell variable')
-    })
-  }
-
   ctx.effect(() => ctx.webServer.register({
     kind: 'exact',
     path: TMON_STATUS_PATH,
@@ -1129,7 +872,7 @@ export function apply(ctx) {
       // bundled copy means "installed" is normally already true, so the only
       // case left to report is a distribution that shipped without it.
       if (health === null) {
-        const available = await hasBundledTmon() || await findCli() !== null
+        const available = await findCli() !== null
         if (!available) {
           sendJson(res, 200, { reachable: false, port, version: null, installed: false, reason })
           return
@@ -1159,56 +902,6 @@ export function apply(ctx) {
   // than writing the file here. Restarting is separate and deliberate: a
   // setting reaches the next task only after the server is replaced, and the
   // panel asks what that would interrupt before it asks for one.
-  ctx.effect(() => ctx.webServer.register({
-    kind: 'exact',
-    path: TMON_CONFIG_PATH,
-    handler: async (req, res) => {
-      if (rejected(req, res)) return
-      const port = await readPort()
-      try {
-        if (req.method === 'GET') {
-          const config = await request(port, '/api/config')
-          sendJson(res, 200, config)
-          return
-        }
-        if (req.method === 'POST') {
-          const body = await readBody(req)
-          const parsed = body === '' ? {} : JSON.parse(body)
-          const result = await postJson(port, '/api/config', { shell: parsed.shell })
-          sendJson(res, 200, result)
-          return
-        }
-        res.statusCode = 405
-        res.setHeader('allow', 'GET, POST')
-        res.end()
-      } catch (error) {
-        sendJson(res, 500, { error: String(error?.message ?? error) })
-      }
-    },
-  }), `tmon: ${TMON_CONFIG_PATH}`)
-
-  ctx.effect(() => ctx.webServer.register({
-    kind: 'exact',
-    path: TMON_CHECK_PATH,
-    handler: async (req, res) => {
-      if (rejected(req, res)) return
-      if (req.method !== 'POST') {
-        res.statusCode = 405
-        res.setHeader('allow', 'POST')
-        res.end()
-        return
-      }
-      const port = await readPort()
-      try {
-        const parsed = JSON.parse(await readBody(req))
-        const result = await postJson(port, '/api/config/check', { shell: parsed.shell })
-        sendJson(res, 200, result)
-      } catch (error) {
-        sendJson(res, 500, { error: String(error?.message ?? error) })
-      }
-    },
-  }), `tmon: POST ${TMON_CHECK_PATH}`)
-
   ctx.effect(() => ctx.webServer.register({
     kind: 'exact',
     path: TMON_RESTART_PATH,
@@ -1448,7 +1141,7 @@ export function apply(ctx) {
             reachable: false,
             port,
             tasks: [],
-            reason: `${String(error?.message ?? error)} (is tmon running? start one task with \`"$DSH_TMON_CLI" "<command>"\`)`,
+            reason: `${String(error?.message ?? error)} (is tmon running? start one task with \`tmon "<command>"\`)`,
           }
         }
       },

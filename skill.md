@@ -14,41 +14,41 @@ tmon 是命令执行追踪工具：命令包进 tmon 后行为与直接执行完
 把整条命令当一个字符串传进去，外层引号包住全部：
 
 ```
-"$DSH_TMON_CLI" "curl -o big.bin https://example.com/big.bin"
-"$DSH_TMON_CLI" "npm run build"
-"$DSH_TMON_CLI" "rsync -a /data/ /backup/"
+tmon "curl -o big.bin https://example.com/big.bin"
+tmon "npm run build"
+tmon "rsync -a /data/ /backup/"
 ```
 
-`$DSH_TMON_CLI` 由插件注入，指向插件自带的那份 tmon，**不在 PATH 上**，所以不要写裸 `tmon`。
+`tmon` 由你自己安装（`npm install -g @qiu745/tmon`，需要 Node 22.18+），在 PATH 上直接可用。
 
-这是一条命令的入口：`"$DSH_TMON_CLI" "<命令>"`。要透传参数给 tmon 自己，写成 `"$DSH_TMON_CLI" ls -la`。
+这是一条命令的入口：`tmon "<命令>"`。要把参数给 tmon 自己，写成 `tmon ls -la`。
 
-**不要用 `bash -c` 套一层**（原因见下面的坑）。脚本先写进文件，再 `"$DSH_TMON_CLI" "bash /path/to/x.sh"`。
+**不要用 `bash -c` 套一层**（原因见下面的坑）。脚本先写进文件，再 `tmon "bash /path/to/x.sh"`。
 
 **不要自己用 `sleep` 轮询盯命令。** 想看进度就用 `tmon_tasks`，想等结束就用 `tmon wait <id>`（退出码透传）；`sleep 20; 再看一眼` 这种写法既看不见中间过程，又浪费一轮往返，还可能把一次正常的长任务误判成卡死。
 
-**命令本身带延时，一律走 tmon，不估总时长。** `sleep`、`timeout`、`ping -n`/`-c` 当停顿用、退避重试循环、`Start-Sleep`、`timeout /t` —— 只要命令里有等待，就 `"$DSH_TMON_CLI" "<命令>"`。裸跑这类命令会把整轮卡住，用户既看不到进度也没法取消，哪怕总时长只有几秒。
+**命令本身带延时，一律走 tmon，不估总时长。** `sleep`、`timeout`、`ping -n`/`-c` 当停顿用、退避重试循环、`Start-Sleep`、`timeout /t` —— 只要命令里有等待，就 `tmon "<命令>"`。裸跑这类命令会把整轮卡住，用户既看不到进度也没法取消，哪怕总时长只有几秒。
 
-**tmon 里跑的是配置的那个 shell，可能和当前会话的 shell 不同。** 默认是 Windows 的 `cmd.exe`、其它平台的 `/bin/sh`；用户可能在 tmon 设置里改成 `bash`、`pwsh` 或某个绝对路径。写命令前先想清楚它在哪个 shell 里展开：`cmd` 里没有 `$VAR`、没有 `&&` 之外的 Unix 习惯，`bash` 里才能用单引号嵌套与管道组合。拿不准就用脚本文件再 `"$DSH_TMON_CLI" "bash /path/to/x.sh"`，让方言只出现在文件里。
+**tmon 里跑的是配置的那个 shell，可能和当前会话的 shell 不同。** 默认是 Windows 的 `cmd.exe`、其它平台的 `/bin/sh`；用户可能在 tmon 设置里改成 `bash`、`pwsh` 或某个绝对路径。写命令前先想清楚它在哪个 shell 里展开：`cmd` 里没有 `$VAR`、没有 `&&` 之外的 Unix 习惯，`bash` 里才能用单引号嵌套与管道组合。拿不准就用脚本文件再 `tmon "bash /path/to/x.sh"`，让方言只出现在文件里。
 
 需要后台执行时用 shell 的后台化，tmon 会在 stderr 打印任务 id：
 
 ```
-"$DSH_TMON_CLI" "npm run build" &        # tmon: task 7f2a9c3e started
+tmon "npm run build" &        # tmon: task 7f2a9c3e started
 ```
 
 在 `ops_bash` 这类工具里 pty 会被切断，可能让任务被记成 `error`；长任务更稳的写法是用工具自带的后台能力起 tmon 命令。
 
 ## 上报进度
 
-在由 tmon 启动的脚本里可以用这两个子命令（tmon 会注入 `TMON_TASK_ID`，它们靠它找到任务）。**必须写 `"$DSH_TMON_CLI"`，裸 `tmon` 不在 PATH 上**——直接写 `tmon progress` 会 `command not found`，而任务照样以 0 退出，进度静默丢失：
+在由 tmon 启动的脚本里可以用这两个子命令（tmon 会注入 `TMON_TASK_ID`，它们靠它找到任务）：
 
 ```
-"$DSH_TMON_CLI" progress 45 "解压中"     # 百分比 + 阶段消息
-"$DSH_TMON_CLI" stage "编译"             # 仅阶段名
+tmon progress 45 "解压中"     # 百分比 + 阶段消息
+tmon stage "编译"             # 仅阶段名
 ```
 
-在 tmon 之外调用会直接报错 `未在 tmon 任务环境中运行（缺少 TMON_TASK_ID）`——所以只能写在被 `"$DSH_TMON_CLI" "..."` 包起来的那条命令里，不能在外面补报。
+在 tmon 之外调用会直接报错 `未在 tmon 任务环境中运行（缺少 TMON_TASK_ID）`——所以只能写在被 `tmon "..."` 包起来的那条命令里，不能在外面补报。
 
 用户能在面板里看到进度条和当前阶段，模型能从 `tmon_tasks` 的 `lastPct` / `lastStage` 读到同样的数字。**写长脚本时主动加这两条，比让人盯着日志猜要可靠得多。**
 
@@ -97,11 +97,11 @@ tmon kill 7f2a9c3e            # 取消任务
 
 ## 踩过的坑（都是实测复现过的）
 
-**`tmon --version` 会被记成一条失败任务。** 任何不是已知子命令的参数都会被当成要执行的命令：`cmd: "--version"`、`status: failed`、`exitCode: 1`。已知子命令只有 `last` `ls` `status` `show` `wait` `kill` `progress` `stage` `skill` `kill-server` `serve`。不要为了查装没装去跑 `tmon --version`：直接用 `"$DSH_TMON_CLI" "<cmd>"`；shell 报找不到 tmon 时，说明插件自带的副本缺失或损坏，当作插件问题告诉用户，不要换别的办法重跑。
+**`tmon --version` 会被记成一条失败任务。** 任何不是已知子命令的参数都会被当成要执行的命令：`cmd: "--version"`、`status: failed`、`exitCode: 1`。已知子命令只有 `last` `ls` `status` `show` `wait` `kill` `progress` `stage` `skill` `kill-server` `serve`。不要为了查装没装去跑 `tmon --version`：直接用 `tmon "<cmd>"`；shell 报找不到 tmon 时，说明用户还没装，告诉他 `npm install -g @qiu745/tmon` 再等他就位，不要换别的办法重跑。
 
-**`tmon bash -c '...'` 会把引号打散。** 实测记下的 `cmd` 是 `bash -c for i in 1 2 3 4 5 6 7 8; do echo "step $i ..."; sleep 1.2; do`：外层引号、分号、`done` 全被拆没，任务 `failed`、`exitCode 2`。tmon 会把参数重新拼成一条命令字符串再交给 shell，这一来一回吃掉了嵌套引号。正确做法是脚本写进文件再 `"$DSH_TMON_CLI" "bash /path/to/x.sh"`。
+**`tmon bash -c '...'` 会把引号打散。** 实测记下的 `cmd` 是 `bash -c for i in 1 2 3 4 5 6 7 8; do echo "step $i ..."; sleep 1.2; do`：外层引号、分号、`done` 全被拆没，任务 `failed`、`exitCode 2`。tmon 会把参数重新拼成一条命令字符串再交给 shell，这一来一回吃掉了嵌套引号。正确做法是脚本写进文件再 `tmon "bash /path/to/x.sh"`。
 
-**不要嵌套 tmon 自己的子命令。** `"$DSH_TMON_CLI" "tmon ls"` 会被当成普通命令再跑一遍，白白多一层任务。这些直接在命令行上调。
+**不要嵌套 tmon 自己的子命令。** `tmon "tmon ls"` 会被当成普通命令再跑一遍，白白多一层任务。这些直接在命令行上调。
 
 **`status: error` 不等于命令失败。** tmon 的 server 重启时会把内存里所有 `running` 的任务强制改写成 `error`（重启后没法再控制原来的执行器）。看到 `error` 且没有 `exitCode` 应当理解为「状态未知」；真正的失败有非 0 的 `exitCode`。`tmon_tasks` 已经替你处理这一条，会附注说明。
 

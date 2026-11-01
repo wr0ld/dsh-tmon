@@ -1,6 +1,6 @@
 # dsh-tmon
 
-把 [tmon](https://github.com/cy745/tmon) 的工作台搬进 Harness：会话顶部多一个「命令终端」标签，里面是 tmon 自己的网页；`tmon` 技能带上它的使用说明，系统提示里有一段提醒模型把长命令套进 tmon；`tmon_tasks` 工具让模型能查任务状态和输出。**tmon 由插件自带，不需要另外安装。**
+把 [tmon](https://github.com/cy745/tmon) 的工作台搬进 Harness：会话顶部多一个「命令终端」标签，里面是 tmon 自己的网页；`tmon` 技能带上它的使用说明，系统提示里有一段提醒模型把长命令套进 tmon；`tmon_tasks` 工具让模型能查任务状态和输出。**需要先装好 tmon：`npm install -g @qiu745/tmon`（Node 22.18+）。**
 
 ## 它解决的是什么问题
 
@@ -81,25 +81,15 @@ tmon 的 HTTP API 只接受 Host 和 Origin 都是本机的请求。内嵌页面
 
 列表总带上全量计数与状态分布，`status` 只影响返回哪几条、不影响计数——这样过滤结果为空时也看得到整体情况。
 
-## 配置 shell
-
-tmon 用它配置的 shell 启动每条命令，默认是 Windows 的 `cmd.exe`、其它平台的 `/bin/sh`。在 **DSH 设置 → tmon** 里可以改成 `bash`、`pwsh`，或任何可执行文件。
-
-- 填名字（`bash`）按 `PATH` 找；填路径（`C:\Program Files\Git\bin\bash.exe`）要求文件真实存在且可执行。
-- 「检测」只验证能不能起来，不改配置；「保存」才写进 `~/.tmon/config.json`。
-- 填错了不会让命令跑不起来：解析不出来就退回平台默认，并把被拒的值报在 `resolved.rejected` 里。
-- 参数按名字判断：`sh`/`bash`/`dash`/`zsh`/`ksh` 用 `-c`，其余用 `/c`。Git Bash 不认 `/c`，cmd 与 PowerShell 不认 `-c`，所以不能靠平台决定。
-- 配置只在任务启动时读，**保存后要让新值生效得重启 tmon 服务**。设置页会先列出正在运行的任务，确认后才重启——重启会中断它们。
-
-`~/.tmon/config.json` 就一个字段：`{"shell": "bash"}`。删掉它就回到默认。
-
 ## 安装
 
-**不需要另外装 tmon：插件自带一份改过的 tmon**（`vendor/tmon`，约 11 MB）。装好插件就能用，面板第一次打开时插件自己把服务拉起来。
+先在命令行装好 tmon 本体：
 
-自带的动过一处：上游按 `ComSpec` 起命令、改不了，这份加了 `~/.tmon/config.json` 和服务端的 shell 解析，所以在设置里能选 `bash` 并让它真的生效。其余与上游一致。
+```
+npm install -g @qiu745/tmon
+```
 
-服务是直接用 `node vendor/tmon/bin/tmon.js serve` 起的，与 tmon 自己的 `ensureServer` 同一路子，大约 300 毫秒，不需要人管，也不会弹黑窗口（走 `tmon.cmd` 那个批处理壳就要 `shell: true`，在 Windows 上那会弹一个控制台出来）。
+插件不带这个 CLI，用的是你装的那个：`tmon` 在 `PATH` 上就行。装完插件后第一次打开面板，插件会自己把 `tmon serve` 拉起来，大约 300 毫秒，不弹黑窗口（直接 `spawn` node 跑它的入口，不经过 `tmon.cmd` 那个批处理壳——走壳就要 `shell: true`，在 Windows 上那会弹出控制台）。
 
 如果你机器上已经全局装了 tmon 并在跑，插件会直接用那个（端口文件里写着），不会另起一个；两者数据在同一个 `~/.tmon` 下，互不冲突。
 
@@ -139,11 +129,11 @@ rm -rf ~/.tmon              # 可选：清掉任务数据与 token
 
 ## 已知边界
 
+- 插件不预检 tmon 装没装：提示段和技能无条件注入，模型第一次用会直接撞上 `tmon: command not found`，由提示段接管——告诉用户装 `npm install -g @qiu745/tmon`，不重试、也不悄悄改成裸跑命令。这样既不每轮做一次文件探测，提示内容也不会随环境变长变短。
+- 面板只认 `~/.tmon/port` 里写的那个服务，不区分它是由本插件拉起的、还是你自己在终端里起的。
 - 面板就是 tmon 的网页，所以它的功能边界等于 tmon 的边界：这里没有比 tmon 网页更多的能力，只是把它放到会话里。
 - 内嵌页面靠 iframe 加载 `http://127.0.0.1:<端口>`。如果哪天 Harness 给页面加了限制 iframe 的 CSP，或 tmon 改成拒绝被嵌入，这里会显示空白——那时用「在浏览器打开」仍可用。
 - 端口每 10 秒才问一次，tmon 换端口后最多 10 秒才反映到面板上；「重新加载」会立刻重问一次。
-- 插件不预检 tmon 装没装，也不探测它在不在：面板只读端口文件，提示段和技能无条件注入。模型第一次用会直接撞上 `tmon: command not found`，由提示段接管——说明这是插件自带的副本缺失或损坏，当作插件问题上报，不重试、不悄悄改成裸跑命令。这样既不每轮做一次文件探测，提示内容也不会随环境变长变短。
-- 插件自带 tmon（`vendor/tmon`），不是从 `~/.tmon` 之外的地方找的：与全局安装的唯一联系是两者共用 `~/.tmon` 这个目录和端口文件。
 - 只有 Windows 和 macOS 的 `node-pty` 预编译随插件走；Linux 上第一次跑任务时由 `node-pty` 现场编译，需要机器上有编译工具链。
 - 面板继承了 tmon 的访问模型：官方对本机浏览器访问默认免认证（[安全模型](https://github.com/cy745/tmon/blob/main/README.zh-CN.md#%E5%AE%89%E5%85%A8%E6%A8%A1%E5%9E%8B)），所以能打开你这台机器浏览器的人就能看到任务输出。插件没有改变这一点，也没有额外加一层。
 - `tmon_tasks` 不做判断，只报事实：`verdict` 是按静默时长分的档，命令本来该不该有输出仍要调用者结合命令本身判断。

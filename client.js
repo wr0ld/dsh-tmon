@@ -55,9 +55,6 @@ window.__ModuleLoader__.load({
     /** Host route reporting whether tmon answers, and on which port. */
     const STATUS_ROUTE = 'tmon/status'
 
-    /** Host routes for the shell setting the settings section owns. */
-    const CONFIG_ROUTE = 'tmon/config'
-    const CHECK_ROUTE = 'tmon/config/check'
     const RESTART_ROUTE = 'tmon/restart'
 
     /** Reachability only changes when tmon starts or stops; this is often enough. */
@@ -76,12 +73,11 @@ window.__ModuleLoader__.load({
         loading: '正在读取 tmon…',
         starting: 'tmon 没有在运行，正在启动它…',
         unavailable: '没有安装 tmon',
-        unavailableHint: '插件自带的 tmon 没有找到，通常是安装不完整，重新安装插件即可。',
+        unavailableHint: '这台机器上没有 tmon。装一下：npm install -g @qiu745/tmon（需要 Node 22.18+），装好在会话里跑一次 tmon "命令" 即可。',
         failed: 'tmon 启动失败',
         failedHint: 'tmon 已经安装，但服务没有起来。在会话里跑一次 tmon "命令" 可以看它报了什错。',
         portHint: '端口读自 ~/.tmon/port（当前 {port}）',
         readError: '读取失败：{reason}',
-        settingsNav: 'tmon',
         settingsIntro: 'tmon 用它启动每条命令。留空就用系统默认的 cmd（Windows）或 /bin/sh。',
         shellLabel: 'Shell',
         shellPlaceholder: 'bash，或 C:\\Program Files\\Git\\bin\\bash.exe',
@@ -113,13 +109,12 @@ window.__ModuleLoader__.load({
         restartButton: 'Restart',
         openPage: 'Open in browser',
         loading: 'Reading tmon…',
-        unavailable: 'the bundled tmon is missing',
+        unavailable: 'tmon is not installed',
         unavailableHint: 'The copy of tmon this plugin ships is missing, which usually means an incomplete install; reinstalling the plugin fixes it.',
         failed: 'tmon failed to start',
         failedHint: 'tmon is installed but its service did not come up. Run tmon "command" once in a session to see what it reports.',
         portHint: 'Port comes from ~/.tmon/port (now {port})',
         readError: 'Read failed: {reason}',
-        settingsNav: 'tmon',
         settingsIntro: 'tmon runs every command through this shell. Leave it empty for the platform default: cmd on Windows, /bin/sh elsewhere.',
         shellLabel: 'Shell',
         shellPlaceholder: 'bash, or C:\\Program Files\\Git\\bin\\bash.exe',
@@ -259,161 +254,7 @@ window.__ModuleLoader__.load({
       },
     }
 
-    /**
-     * The settings section: which shell tmon runs commands in.
-     *
-     * The section never writes the config file itself — the host relays to the
-     * running tmon, so what the page reports is what the process will act on.
-     * A save is followed by a restart question rather than a silent restart:
-     * tmon reads the shell when a task starts, so the setting only reaches the
-     * next task once the server is replaced, and replacing it kills whatever
-     * is running.
-     */
-    function TmonSettings(props) {
-      const t = typeof props.t === 'function' ? props.t : () => ''
-      const [value, setValue] = React.useState('')
-      const [resolved, setResolved] = React.useState(null)
-      const [loading, setLoading] = React.useState(true)
-      const [busy, setBusy] = React.useState(null)
-      const [probe, setProbe] = React.useState(null)
-      const [notice, setNotice] = React.useState(null)
-      const [restart, setRestart] = React.useState(null)
-
-      React.useEffect(() => {
-        let cancelled = false
-        void (async () => {
-          try {
-            const answer = await (await fetch(CONFIG_ROUTE, { headers: { accept: 'application/json' } })).json()
-            if (cancelled) return
-            const shell = typeof answer?.config?.shell === 'string' ? answer.config.shell : ''
-            setValue(shell)
-            setResolved(answer?.resolved ?? null)
-          } catch (error) {
-            if (!cancelled) setNotice({ kind: 'bad', text: String(error?.message ?? error) })
-          } finally {
-            if (!cancelled) setLoading(false)
-          }
-        })()
-        return () => { cancelled = true }
-      }, [])
-
-      const detect = async () => {
-        setBusy('detect')
-        setProbe(null)
-        try {
-          const answer = await (await fetch(CHECK_ROUTE, {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ shell: value }),
-          })).json()
-          setProbe(answer)
-        } catch (error) {
-          setNotice({ kind: 'bad', text: String(error?.message ?? error) })
-        } finally {
-          setBusy(null)
-        }
-      }
-
-      const save = async () => {
-        setBusy('save')
-        setNotice(null)
-        try {
-          const answer = await (await fetch(CONFIG_ROUTE, {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ shell: value }),
-          })).json()
-          setResolved(answer?.resolved ?? null)
-          setNotice({ kind: 'good', text: t('shellSaved') })
-          const state = await (await fetch(RESTART_ROUTE, { headers: { accept: 'application/json' } })).json()
-          setRestart({ running: Array.isArray(state?.running) ? state.running : [] })
-        } catch (error) {
-          setNotice({ kind: 'bad', text: String(error?.message ?? error) })
-        } finally {
-          setBusy(null)
-        }
-      }
-
-      const doRestart = async () => {
-        setBusy('restart')
-        try {
-          const answer = await (await fetch(RESTART_ROUTE, {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ confirm: true }),
-          })).json()
-          setRestart(null)
-          setNotice({ kind: 'good', text: t('restartDone') })
-          setResolved(current => current === null ? current : { ...current, port: answer?.port ?? current.port })
-        } catch (error) {
-          setNotice({ kind: 'bad', text: t('restartFailed', { reason: String(error?.message ?? error) }) })
-        } finally {
-          setBusy(null)
-        }
-      }
-
-      if (loading) {
-        return h('div', { style: styles.section }, h('div', { style: styles.hint }, t('loading')))
-      }
-
-      const runningCount = restart?.running?.length ?? 0
-
-      return h('div', { style: styles.section },
-        h('div', { style: styles.sectionIntro }, t('settingsIntro')),
-        h('div', { style: styles.field },
-          h('label', { style: styles.label }, t('shellLabel')),
-          h('input', {
-            style: styles.input,
-            value,
-            placeholder: t('shellPlaceholder'),
-            spellCheck: false,
-            onChange: event => {
-              setValue(event.target.value)
-              setProbe(null)
-            },
-          }),
-          resolved !== null && value === ''
-            ? h('div', { style: styles.hint }, t('shellEmpty', { shell: resolved.shell }))
-            : null,
-          probe === null
-            ? null
-            : h('div', { style: probe.ok === true ? styles.hintGood : styles.hintBad },
-              probe.ok === true
-                ? t('shellUsable', { shell: probe.shell ?? value })
-                : t('shellUnusable', { shell: probe.shell ?? value })),
-        ),
-        h('div', { style: styles.row },
-          h('button', {
-            style: styles.button,
-            disabled: busy !== null,
-            onClick: detect,
-          }, busy === 'detect' ? t('shellDetecting') : t('shellDetect')),
-          h('button', {
-            style: styles.link,
-            disabled: busy !== null,
-            onClick: save,
-          }, busy === 'save' ? t('shellSaving') : t('shellSave')),
-        ),
-        notice === null
-          ? null
-          : h('div', { style: notice.kind === 'good' ? styles.hintGood : styles.hintBad }, notice.text),
-        restart === null
-          ? null
-          : h('div', { style: styles.dialog },
-            h('div', { style: styles.hint }, t('restartNeeded')),
-            h('div', { style: runningCount > 0 ? styles.hintBad : styles.hint },
-              runningCount > 0 ? t('restartConfirm', { count: String(runningCount) }) : t('restartNone')),
-            h('div', { style: styles.row },
-              h('button', { style: styles.link, disabled: busy !== null, onClick: doRestart },
-                busy === 'restart' ? t('restarting') : t('restartDo')),
-              h('button', { style: styles.button, disabled: busy !== null, onClick: () => setRestart(null) },
-                t('restartCancel')),
-            ),
-          ),
-      )
-    }
-
-    /** The panel: tmon's own page, or why it is not there. */
+        /** The panel: tmon's own page, or why it is not there. */
     function TmonPanel(props) {
       const t = typeof props.t === 'function' ? props.t : () => ''
       const [snapshot, setSnapshot] = React.useState({
@@ -611,12 +452,6 @@ window.__ModuleLoader__.load({
           })
         }
 
-        /** The settings section, with the same translate fallback the panel uses. */
-        const Settings = props => h(TmonSettings, {
-          ...props,
-          t: typeof props.t === 'function' ? props.t : t,
-        })
-
         ctx.effect(
           () => ctx.slots.inject('main', () => ctx.slots.register({
             name: 'main',
@@ -637,19 +472,6 @@ window.__ModuleLoader__.load({
           'tmon: conversation view tab',
         )
 
-        // Its own section rather than a page inside Plugins: the only setting
-        // worth a screen here is the shell, and one section reads better than a
-        // tab strip with one tab in it.
-        ctx.effect(
-          () => ctx.slots.inject('settings.section', () => ctx.slots.register({
-            name: 'settings.section',
-            id: 'tmon',
-            order: 60,
-            locale: NS,
-            label: () => t('settingsNav'),
-          }, Settings)),
-          'tmon: settings section',
-        )
       },
     }
   },
