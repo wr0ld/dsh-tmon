@@ -1,7 +1,7 @@
 {
   "name": "dsh-tmon",
   "version": "0.1.2",
-  "description": "Bring tmon's long-command workbench into the Harness: a 「命令终端」tab embeds tmon's own web page, a `tmon_tasks` tool lets the model tell a stuck command from a slow one, and a bundled skill plus system-prompt section keep it in the loop.",
+  "description": "Bring tmon's long-command workbench into the Harness, no separate install: a bundled, patched tmon serves the 「命令终端」 tab, a `tmon_tasks` tool lets the model tell a stuck command from a slow one, and tasks stay scoped to the session that started them.",
   "type": "module",
   "license": "MIT",
   "author": "wr0ld",
@@ -41,7 +41,8 @@
     "locale/zh.json",
     "locale/en.json",
     "icon.svg",
-    "README.md"
+    "README.md",
+    "vendor/tmon"
   ],
   "dsh": {
     "bundle": {
