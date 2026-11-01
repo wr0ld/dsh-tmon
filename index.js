@@ -164,6 +164,13 @@ async function readSessionMap() {
 
 /**
  * Record which session started a task.
+ *
+ * Two places need the answer and they read different sources: `tmon_tasks`
+ * reads this map, while the panel shows tmon's own web page, which reads the
+ * `session` field inside the task's `meta.json`. Writing only the map left the
+ * panel unable to see a task the tool could report, so the field is copied into
+ * the meta as well. tmon reads the meta on demand, so the panel picks the
+ * change up on its next poll without anything restarting.
  * @param taskId - the task's eight-hex-digit id.
  * @param sessionId - the session that ran the command.
  */
@@ -175,6 +182,34 @@ async function rememberTask(taskId, sessionId) {
   const temporary = `${target}.${String(process.pid)}.tmp`
   await writeFile(temporary, JSON.stringify(map, null, 2), { mode: 0o600 })
   await rename(temporary, target)
+  await stampTaskSession(taskId, sessionId)
+}
+
+/**
+ * Write the owning session into a task's own metadata.
+ *
+ * This is the copy the panel reads. A task tmon never recorded a session for
+ * (one started outside DSH) stays unowned: the field is added, not invented.
+ * @param taskId - the task's eight-hex-digit id.
+ * @param sessionId - the session that ran the command.
+ */
+async function stampTaskSession(taskId, sessionId) {
+  if (!TASK_ID.test(taskId)) return
+  const file = join(tmonHome(), 'tasks', taskId, 'meta.json')
+  let meta
+  try {
+    meta = JSON.parse(await readFile(file, 'utf8'))
+  } catch (_absentOrUnreadable) {
+    // tmon has not flushed the meta yet, or the task is gone: the map above is
+    // still the record `tmon_tasks` uses, so nothing is lost by skipping this.
+    return
+  }
+  if (meta === null || typeof meta !== 'object') return
+  if (meta.session === sessionId) return
+  meta.session = sessionId
+  const temporary = `${file}.${String(process.pid)}.tmp`
+  await writeFile(temporary, JSON.stringify(meta, null, 2), { mode: 0o600 })
+  await rename(temporary, file)
 }
 
 /**
